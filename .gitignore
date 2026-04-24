@@ -5,6 +5,7 @@ __pycache__/
 *.log
 debug_log.txt
 *.key
+*.docx
 
 # Local assistant/tooling state
 .claude/settings.local.json
