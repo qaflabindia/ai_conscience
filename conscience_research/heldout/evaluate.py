@@ -440,7 +440,7 @@ def evaluate_paraphrases(agent) -> dict:
 def _adv_case(agent, c) -> float:
     p = c.params
 
-    if c.kind == "conflict":
+    if c.kind in ("conflict", "hierarchy"):
         # Feed the same active-norm vector in both key orders.  A hierarchy
         # resolves them identically; `violated_domains[0]` does not.
         scores = p["scores"]

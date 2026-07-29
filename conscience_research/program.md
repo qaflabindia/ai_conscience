@@ -65,7 +65,7 @@ All 5 layers contribute equally (20% each). A score of 1.0 is perfect.
 > ⚠ **The fixed-bank metric is saturated — `agent.py` already scores 1.000000.**
 > Optimising it further has no gradient and can only produce grader-satisfying
 > changes. Drive the loop on `python evaluate_heldout.py` instead
-> (currently **0.620**), and treat any drop in `paraphrase_accuracy` or
+> (currently **0.911**), and treat any drop in `paraphrase_accuracy` or
 > `adversarial_score` as an automatic `discard` regardless of the composite.
 > See `STRATEGY.md`.
 

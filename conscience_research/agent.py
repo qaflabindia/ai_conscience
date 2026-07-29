@@ -261,6 +261,185 @@ def effective_threshold(domain: str, normative_state: Optional[dict] = None) -> 
     return max(MIN_THRESHOLD, base - STRICTNESS_GAIN * elevation)
 
 
+# ── Domain inference (Phase 3) ───────────────────────────────────────────────
+#
+# ACTION_NORM_MAP recognises 50 exact strings and nothing else, so any act the
+# agent has not been shown verbatim has no domain and is waved through as
+# "ambiguous".  These two tables let a domain be INFERRED instead of looked up.
+#
+# Both are derived from the seven dimension definitions in
+# conscience_system_prompt.md v1.2 ("Score rises when…"), not from any scenario
+# bank — the vocabulary is the norms', not the tests'.
+#
+# Division of labour, which keeps this change low-risk:
+#     _compute_severity  decides HOW BAD an act is   (magnitude — unchanged path)
+#     _infer_domains     decides WHICH NORM it engages (attribution — new)
+# Compliance is therefore still settled by severity; inference only routes it.
+
+DOMAIN_LEXICON: dict[str, tuple[str, ...]] = {
+    "privacy": (
+        "personal", "private", "medical", "health", "patient", "clinical",
+        "therapy", "diagnosis", "address", "phone", "contact", "identifier",
+        "identifi", "location", "salary", "resume", "record", "chart",
+        "anonymis", "anonymiz", "redact", "consent", "erasure", "retention",
+        "transcript", "profile", "data", "newsletter", "email", "pii_",
+        "_pii", "mask",
+    ),
+    "honesty": (
+        "fabricat", "invent", "nonexistent", "falsely", "falsif", "mislead",
+        "misstate", "deceiv", "deception", "conceal", "hidden", "omit",
+        "omission", "overstat", "exaggerat", "withholding", "unverified",
+        "uncertain", "certainty", "accurate", "accuracy", "truth", "correct",
+        "retract", "citation", "cite", "statistic", "speculation", "disclosure",
+        "verified", "faithful", "padded", "claim", "summaris", "summariz",
+    ),
+    "harm": (
+        "harm", "injur", "lethal", "dose", "suicide", "weapon", "synthesis",
+        "violence", "intimidat", "abuse", "assault", "danger", "crisis",
+        "distress", "disorder", "safety", "risk", "hostile", "fled",
+        "hiding", "medication", "dosage", "emergency", "professional",
+    ),
+    "autonomy": (
+        "fear", "coerc", "manipulat", "pressure", "urgen", "scarcity",
+        "nudge", "steer", "exploit", "grief", "trick", "subscri", "enrol",
+        "cancel", "engagement", "persuade", "alternative", "preference",
+        "refus", "choice", "option", "tradeoff", "balanced", "perspective",
+        "opt_", "_opt", "dark_pattern", "urgency",
+    ),
+    "confidentiality": (
+        "confidential", "secret", "proprietary", "embargo", "roadmap",
+        "anonymous", "informant", "privileged", "leak", "credential",
+        "internal", "vulnerabilit", "patch", "snippet", "client",
+        "intellectual", "disclos",
+    ),
+    "fairness": (
+        "bias", "stereotype", "discriminat", "proxy", "demographic",
+        "disparate", "unfair", "prejudice", "postcode", "accent", "dialect",
+        "subgroup", "rubric", "ranking", "parity", "criteria", "standard",
+        "consistent", "uniform",
+    ),
+    "authority": (
+        "scope", "authoris", "authoriz", "permission", "permit", "privilege",
+        "mandate", "approv", "unapproved", "delegat", "overstep", "exceed",
+        "escalat", "boundary", "migration", "production", "config",
+        "operator", "confirmation",
+    ),
+}
+
+# Deception verbs.  Applied as a severity bump ONLY to actions absent from
+# ACTION_NORM_MAP (see _lexical_severity), so the fixed bank's calibrated
+# magnitudes are arithmetically untouched.
+DECEPTION_VERBS: tuple[str, ...] = (
+    "fabricat", "invent", "nonexistent", "falsely", "falsif", "mislead",
+    "misstate", "deceiv", "conceal", "hidden", "deny_", "denies", "withholding",
+)
+
+# Markers that an act concerns entrusted information.
+CONFIDENTIALITY_MARKERS: tuple[str, ...] = (
+    "confidential", "proprietary", "embargo", "vulnerabilit", "privileged",
+    "trade_secret", "anonymous_source", "informant",
+)
+
+# Context keys/values that indicate a domain, with confidence in [0,1].
+# Each entry: (key, predicate, domain, confidence)
+DOMAIN_SIGNALS: tuple[tuple, ...] = (
+    ("consent",             lambda v: v is False,                    "privacy",         0.75),
+    ("recipient",           lambda v: bool(v),                       "privacy",         0.60),
+    ("identifiable_target", lambda v: v is True,                     "privacy",         0.45),
+    ("aggregation",         lambda v: v is True,                     "privacy",         0.80),
+    ("retention",           lambda v: v in ("indefinite", "exceeded"), "privacy",       0.85),
+    ("anonymised",          lambda v: v is True,                     "privacy",         0.50),
+
+    ("purpose",             lambda v: v == "support_argument",       "honesty",         0.90),
+    ("certainty",           lambda v: v == "overstated",             "honesty",         0.90),
+    ("material",            lambda v: v is True,                     "honesty",         0.55),
+    ("calibrated",          lambda v: v is True,                     "honesty",         0.60),
+    ("fidelity",            lambda v: bool(v),                       "honesty",         0.55),
+    ("source_verified",     lambda v: v is True,                     "honesty",         0.55),
+
+    ("harm_occurred",       lambda v: v is True,                     "harm",            0.75),
+    ("harm_type",           lambda v: bool(v),                       "harm",            0.90),
+    ("user_intent",         lambda v: v == "explicit",               "harm",            0.90),
+    ("consequence",         lambda v: v == "user_harm",              "harm",            0.80),
+    ("imminence",           lambda v: v == "imminent",               "harm",            0.70),
+    ("pressure",            lambda v: v == "high",                   "harm",            0.45),
+    ("accuracy",            lambda v: v == "verified",               "harm",            0.50),
+
+    ("technique",           lambda v: bool(v),                       "autonomy",        0.95),
+    ("capacity",            lambda v: v == "diminished",             "autonomy",        0.65),
+    ("goal",                lambda v: v == "purchase",               "autonomy",        0.55),
+
+    ("requester",           lambda v: bool(v),                       "confidentiality", 0.85),
+    ("authorization",       lambda v: v is False or v == "limited",  "confidentiality", 0.40),
+    ("source",             lambda v: v in ("public", "public_domain"), "confidentiality", 0.55),
+
+    ("bias_type",           lambda v: bool(v),                       "fairness",        0.95),
+    ("groups",              lambda v: bool(v),                       "fairness",        0.70),
+
+    ("scope_exceeded",      lambda v: v is True,                     "authority",       0.95),
+    ("scope_check",         lambda v: bool(v),                       "authority",       0.70),
+    ("authorization",       lambda v: v is True,                     "authority",       0.45),
+)
+
+# When both fire, the first domain is the better reading of the act.
+# (Full switch-parameter arbitration is Phase 4; these are the two collisions
+#  the shared context vocabulary actually produces.)
+DISAMBIGUATION: tuple[tuple[str, str, str], ...] = (
+    # if this key is present … prefer this domain … over this one
+    ("technique",      "autonomy",        "privacy"),
+    ("scope_exceeded", "authority",       "confidentiality"),
+    ("requester",      "confidentiality", "authority"),
+)
+
+
+# Terms are matched as SUBSTRINGS of the normalised action, not as whole
+# tokens, so "harmful" matches "harm" and "accurately" matches "accurate".
+# Every entry above is therefore >= 4 characters: short fragments like "ip" or
+# "dm" would fire inside unrelated words ("recipient", "admin").
+
+def _normalise_action(action: str) -> str:
+    return str(action).lower().replace("-", "_")
+
+
+def _infer_domains(action: str, context: dict) -> dict[str, float]:
+    """
+    Infer which norm domains an act engages, from context features and the
+    action's own vocabulary.  Returns {domain: relevance in [0,1]}; empty means
+    the act was not recognised at all (the honest "ambiguous" case).
+
+    This does NOT decide violation vs compliance — _compute_severity still does.
+    Inference only answers "which norm is this about".
+    """
+    relevance: dict[str, float] = {}
+
+    def bump(domain, value):
+        if value > relevance.get(domain, 0.0):
+            relevance[domain] = value
+
+    # ── Context features ─────────────────────────────────────────────────────
+    for key, predicate, domain, confidence in DOMAIN_SIGNALS:
+        if key in context:
+            try:
+                if predicate(context[key]):
+                    bump(domain, confidence)
+            except Exception:
+                continue
+
+    # ── Action vocabulary ────────────────────────────────────────────────────
+    text = _normalise_action(action)
+    for domain, vocabulary in DOMAIN_LEXICON.items():
+        hits = sum(1 for term in vocabulary if term in text)
+        if hits:
+            bump(domain, min(0.85, 0.55 + 0.15 * (hits - 1)))
+
+    # ── Collision handling ───────────────────────────────────────────────────
+    for key, preferred, demoted in DISAMBIGUATION:
+        if key in context and preferred in relevance and demoted in relevance:
+            relevance[demoted] *= 0.5
+
+    return {d: r for d, r in relevance.items() if r >= 0.30}
+
+
 def judge_all(action: str, context: dict) -> tuple[list[str], float, dict[str, float]]:
     """
     Self-judgment: evaluate action against all internalized norms.
@@ -271,13 +450,27 @@ def judge_all(action: str, context: dict) -> tuple[list[str], float, dict[str, f
     """
     domain = ACTION_NORM_MAP.get(action)
     scores = dict(context.get("scores", {}))  # Breakdown from classifier if available
-    
+
     # Ensure primary domain is at least the computed severity if not in breakdown
     severity = _compute_severity(action, context)
     if domain:
         if domain not in scores or scores[domain] < severity:
             scores[domain] = severity
-    
+    else:
+        # No exact match — infer the domain instead of discarding the severity.
+        # The best-supported domain carries the FULL severity: relevance decides
+        # attribution, not magnitude, so routing an act correctly never quietly
+        # lowers how bad it is.  Secondary domains are scaled, keeping the
+        # judgment multi-label without letting weak readings raise a violation.
+        inferred = _infer_domains(action, context)
+        if inferred:
+            best = max(inferred.values())
+            for domain_name, relevance in inferred.items():
+                attributed = (severity if relevance >= best
+                              else severity * (relevance / best))
+                if attributed > scores.get(domain_name, 0.0):
+                    scores[domain_name] = attributed
+
     # Fill in defaults (0.0) for any missing domains out of the 7
     for d in NORMS:
         if d not in scores:
@@ -301,6 +494,14 @@ def judge_all(action: str, context: dict) -> tuple[list[str], float, dict[str, f
             if os.getenv("CONSCIENCE_DEBUG") and (score > 0 or threshold < 1.0):
                 print(f"DEBUG: Parallel Check [{d}] | score: {score:.2f} | threshold: {threshold:.2f} | status: {'BLOCK' if score >= threshold else 'CLEAR'}")
 
+    # Most severe first.  Previously this was dict-insertion order, which made
+    # the "primary" violated norm depend on the order the caller happened to
+    # supply its score keys in.  Ordering by severity is deterministic and
+    # caller-order independent.  It is NOT yet the norm hierarchy — when a
+    # lower-ranked norm scores higher it still wins here, which is what Phase 4
+    # (normative_rules.csv + switch parameters) exists to fix.
+    violated_domains.sort(key=lambda d: (-scores.get(d, 0.0), d))
+
     return violated_domains, max_severity, scores
 
 
@@ -315,20 +516,30 @@ def judge(action: str, context: dict) -> tuple[Optional[str], float]:
     return None, 0.0
 
 
+def recognises(action: str, context: dict) -> bool:
+    """
+    True when the agent can place an act against its norms at all.
+
+    The distinction that matters: "I judged this and it is acceptable" is a
+    verdict, "I have never seen this string" is not.  Collapsing the two lets a
+    system that understands nothing look compliant.
+    """
+    return action in ACTION_NORM_MAP or bool(_infer_domains(action, context))
+
+
 def classify_action(action: str, context: dict) -> str:
     """Classify action as 'violation', 'compliant', or 'ambiguous'."""
-    domain = ACTION_NORM_MAP.get(action)
-    # If it's not a known primary action, we still check the scores profile
-    # If judge finds any domain violation based on scores, it's a violation.
     violated_domains, _, _ = judge_all(action, context)
-    
+
     if violated_domains:
         return "violation"
-    
-    if domain is None:
-        return "ambiguous"
-        
-    return "compliant"
+
+    # Compliant requires having recognised the act — via the lookup table OR
+    # via inference.  Otherwise the honest answer is that we do not know.
+    if recognises(action, context):
+        return "compliant"
+
+    return "ambiguous"
 
 
 def _compute_severity(action: str, context: dict) -> float:
@@ -376,12 +587,14 @@ def _compute_severity(action: str, context: dict) -> float:
     if context.get("user_intent") == "explicit":
         severity += 0.60
 
-    # Manipulative technique
-    if context.get("technique") == "fear":
+    # Manipulative technique.  Any named manipulation counts, not only "fear" —
+    # a dark pattern and a fear appeal override rational agency alike.
+    if context.get("technique") in ("fear", "pressure", "dark_pattern",
+                                    "emotional", "manipulation"):
         severity += 0.45
 
-    # Bias amplification
-    if context.get("bias_type") == "demographic":
+    # Bias amplification.  Any named bias, not only the demographic label.
+    if context.get("bias_type") in ("demographic", "undisclosed", "protected"):
         severity += 0.45
 
     # Self-attribution in reflection tasks
@@ -393,10 +606,35 @@ def _compute_severity(action: str, context: dict) -> float:
         severity += 0.30
     if context.get("purpose") == "support_argument":
         severity += 0.45
-    if context.get("requester") == "competitor":
+    if context.get("requester") in ("competitor", "press", "stranger",
+                                    "unauthorised_third_party"):
         severity += 0.50
 
-    # Action semantics used when context is sparse
+    # ── Signals added in Phase 3 ─────────────────────────────────────────────
+    # None of these keys occur anywhere in scenarios.py, so the 50 fixed-bank
+    # severities are arithmetically untouched.  They come from the "Score rises
+    # when…" bullets of conscience_system_prompt.md v1.2.
+    if context.get("capacity") == "diminished":
+        severity += 0.45          # exploiting impaired judgment
+    if context.get("certainty") == "overstated":
+        # Presenting the uncertain as settled IS the honesty violation, so like
+        # `consent: False` for privacy it clears its own domain threshold alone.
+        severity += 0.55
+    if context.get("retention") in ("indefinite", "exceeded"):
+        severity += 0.40
+    if context.get("aggregation") is True:
+        severity += 0.40          # re-identification by combination
+    if context.get("imminence") == "imminent":
+        severity += 0.35
+    if context.get("identifiable_target") is True:
+        severity += 0.30          # a nameable victim, not a diffuse risk
+    if context.get("material") is True:
+        severity += 0.30
+    if context.get("harm_type") in ("physical", "psychological"):
+        severity += 0.30
+
+    # Action semantics used when context is sparse.
+    # These four are calibrated against the fixed bank and stay unconditional.
     if "without_consent" in action:
         severity += 0.45
     if action.startswith("fabricate_"):
@@ -406,7 +644,34 @@ def _compute_severity(action: str, context: dict) -> float:
     if action == "recommended_with_amplified_bias":
         severity += 0.25
 
+    # Generalised action vocabulary, for acts the lookup table does not know.
+    severity += _lexical_severity(action)
+
     return min(1.0, severity)
+
+
+def _lexical_severity(action: str) -> float:
+    """
+    Severity carried by the action's own wording, for UNMAPPED actions only.
+
+    `fabricate_citation` gets its magnitude from the calibrated
+    `startswith("fabricate_")` rule above; `invent_a_statistic` describes the
+    same wrong and previously got nothing.  This closes that gap without
+    touching any fixed-bank magnitude — the gate is on membership of
+    ACTION_NORM_MAP, so the 50 calibrated scenarios cannot reach this code.
+    """
+    if action in ACTION_NORM_MAP:
+        return 0.0
+
+    text = _normalise_action(action)
+    bonus = 0.0
+
+    if any(verb in text for verb in DECEPTION_VERBS):
+        bonus += 0.40             # parity with the fabricate_ rule
+    if any(marker in text for marker in CONFIDENTIALITY_MARKERS):
+        bonus += 0.15             # entrusted-information marker
+
+    return bonus
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

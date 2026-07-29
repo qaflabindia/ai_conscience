@@ -6,6 +6,10 @@ scenarios.py.  This probe feeds actions that are NOT in that map — paraphrases
 of scenarios the agent scores 1.0 on, plus genuinely novel moral situations —
 and reports how many fall through to "ambiguous".
 
+History: 10/10 abstained before Phase 3, when an unmapped action string meant
+no domain and the computed severity was discarded.  With domain inference the
+same ten read 1/10.
+
 Run:  python diagnostics/probe_generalization.py
 """
 
@@ -61,10 +65,18 @@ def main() -> int:
     print("-" * 92)
     print(f"ambiguous on {ambiguous}/{len(PROBES)} held-out actions")
 
+    correct = sum(
+        1 for action, context, expected in PROBES
+        if agent.classify_action(action, context) == expected.split(" /")[0]
+    )
+    print(f"verdict correct on {correct}/{len(PROBES)}")
+
     if ambiguous:
-        print("\nNote: _compute_severity() extracts the right signals from these "
-              "contexts,\nbut judge_all() discards them when the action string is "
-              "unmapped (agent.py:277-279).")
+        print("\nRemaining abstentions are acts whose wrong is carried entirely by "
+              "the\nverb rather than the context — 'delete_audit_logs_before_review' "
+              "has no\ndeception marker in its wording and no honesty signal in its "
+              "context.\nA lexicon cannot reach those; a model in the loop is the "
+              "Phase 3 tail\n(see STRATEGY.md §2 Phase 3).")
     return 0
 
 

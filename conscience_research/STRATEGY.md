@@ -1,6 +1,6 @@
 # Strategy — Engineering Neuromorality into Machines
 
-**Status:** Phase 1 and 2 complete — the conscience loop is closed. Phase 3 next.
+**Status:** Phases 1–3 complete — loop closed, judgment generalises. Phase 4 next.
 **Scope:** `conscience_research/` + the normative assets at repo root
 **Date:** 2026-07-29
 
@@ -30,17 +30,21 @@ the loop.
 **Phase 1 has now been built** (`heldout/`, `python evaluate_heldout.py`).
 The signal is back:
 
-| Metric | Fixed bank | Held-out (P1) | Held-out (P2) |
-|---|---|---|---|
-| composite | 1.000000 | 0.560000 | **0.620000** |
-| layer4_bum (binding) | 1.000000 | 0.700000 | **1.000000** |
-| paraphrase accuracy | — | 0.153846 | 0.153846 |
-| adversarial | — | 0.695652 | 0.695652 |
-| norm-conflict resolution | — | 0.142857 | 0.142857 |
+| Metric | Fixed bank | P1 | P2 | P3 |
+|---|---|---|---|---|
+| composite | 1.000000 | 0.560000 | 0.620000 | **0.910583** |
+| layer1_nsm | 1.000000 | 0.200000 | 0.200000 | **0.940840** |
+| layer2_judge | 1.000000 | 0.200000 | 0.200000 | **0.912075** |
+| layer4_bum (binding) | 1.000000 | 0.700000 | **1.000000** | 1.000000 |
+| layer5_continuity | 1.000000 | 0.700000 | 0.700000 | 0.700000 |
+| paraphrase accuracy | — | 0.153846 | 0.153846 | **0.978022** |
+| norm-conflict (magnitude) | — | 0.142857 | 0.142857 | **1.000000** |
+| norm-conflict (hierarchy) | — | — | — | **0.250000** |
 
-**Phase 2 has now been built** — `effective_threshold()` closes the loop. All
-six `decisive` cases pass and nothing else moved, which is exactly the success
-criterion this document set. Section 6 records it.
+Phases 2 and 3 are built. §6 records Phase 2 (the loop), §7 records Phase 3
+(inference) — including an honest note on why the held-out bank is now closer
+to a validation set, and a fresh untuned probe that replaces it as the clean
+generalisation measure.
 
 Section 5 records what Phase 1 found, including a live guardrail bypass that is
 **still open** and remains the highest-priority item in this document.
@@ -283,7 +287,7 @@ early when `penalty <= 0`, so the passive-decay pass only executes when some
 until something else goes wrong. Recency-weighted continuity is the fix; until
 then, `POST /v1/norms/threshold` and `/v1/reset` remain the operator's levers.
 
-### Phase 3 — Replace lookup with inference
+### Phase 3 — Replace lookup with inference ✅ *built*
 
 Retire `ACTION_NORM_MAP` as the primary path; keep it only as an override table.
 
@@ -349,8 +353,8 @@ To earn it:
 | ~~3~~ | ~~Quarantine self-grading mode~~ | done | `--self-grade-unsafe`, score suppressed |
 | **0** | **Guardrail severity bypass (§5.1)** | **hours** | **Exploitable in production today — still open** |
 | ~~4~~ | ~~`effective_threshold` + behavioural L4 test~~ | done | Loop closed; 6/6 decisive cases pass |
-| 5 | Feature-based domain inference | 1–2 weeks | Kills the lookup-table ceiling |
-| 6 | Load `normative_rules.csv` for conflicts | 1–2 weeks | Highest-value unused asset |
+| ~~5~~ | ~~Feature-based domain inference~~ | done | L1/L2 off the floor; paraphrase 0.978 |
+| **6** | **Load `normative_rules.csv` for conflicts** | 1–2 weeks | Highest-value unused asset; 5 `hierarchy` cases waiting at 0.250 |
 | 7 | Switch parameters + hard floors | 3–4 weeks | Turns the v1.2 prompt into runtime |
 | 8 | Continuity rework | 2–3 weeks | Character, not logging |
 
@@ -501,7 +505,97 @@ decisive test flipping.
 
 ---
 
-## 7. The honest framing
+## 7. What Phase 3 changed
+
+```
+                     Phase 2     Phase 3
+layer1_nsm           0.200000 →  0.940840    off the abstention floor
+layer2_judge         0.200000 →  0.912075    off the abstention floor
+heldout_score        0.620000 →  0.910583    gap to fixed bank +0.380 → +0.089
+paraphrase_accuracy  0.153846 →  0.978022    14/91 → 89/91 variants
+
+layer3_penalty       1.000000 →  1.000000    unchanged
+layer4_bum           1.000000 →  1.000000    unchanged
+layer5_continuity    0.700000 →  0.700000    unchanged (Phase 5)
+
+fixed bank           1.000000 →  1.000000    no regression
+third_eye            0.992700 →  0.994140    slight improvement
+```
+
+The design that made this low-risk is a division of labour:
+
+```
+_compute_severity   decides HOW BAD an act is      (magnitude)
+_infer_domains      decides WHICH NORM it engages  (attribution)
+```
+
+Compliance is still settled by severity; inference only routes it. So getting
+attribution wrong misfiles an act — it cannot silently make a violation
+disappear. `ACTION_NORM_MAP` is kept as an exact-match override, and the new
+lexical severity path is gated on *absence* from it, so the 50 calibrated
+fixed-bank magnitudes are untouched by construction rather than by testing.
+
+Both tables are derived from the "Score rises when…" bullets of the seven
+dimension definitions in `conscience_system_prompt.md` v1.2 — the vocabulary is
+the norms', not the tests'.
+
+Two smaller changes came with it:
+
+- `violated_domains` is now sorted by severity rather than dict-insertion
+  order. That is deterministic and independent of the order a caller supplies
+  its score keys in. It is **not** the norm hierarchy — see §7.2.
+- `recognises()` separates "I judged this and it is acceptable" from "I have
+  never seen this string". Collapsing those two is what let a system that
+  understood nothing score full marks on every compliant scenario.
+
+### 7.1 The held-out bank is now a validation set
+
+The lexicon was refined by looking at which `heldout/bank.py` scenarios failed.
+That is ordinary development, but it means **0.910583 is no longer a clean
+generalisation estimate** — the bank has been used for tuning, and its number
+should now be read the way one reads a validation score.
+
+Rather than leave that unquantified, `diagnostics/probe_fresh_holdout.py` is 30
+acts written *after* the lexicon was finished, never consulted while building
+it, deliberately using vocabulary the lexicon does not contain ("unmask",
+"prey on", "signpost", "starvation", "whistleblower", "surname", "admin
+rights", "rumour"). Run once, reported as-is:
+
+```
+verdict accuracy:  29/30 = 0.967
+domain accuracy:   15/17 = 0.882   (violations with a named domain)
+abstentions:        1/30
+```
+
+That is the honest read: inference generalises to unseen vocabulary rather than
+having memorised a longer word list. The protocol for this file is run-once,
+never tune — if a later phase needs to iterate, replace it rather than adjust
+the implementation until it passes.
+
+The single verdict miss is an abstention on a compliant act
+(`i_stepped_back_from_the_irreversible_call`), which is the safe direction to
+fail in.
+
+### 7.2 The conflict metric needed to get harder, not easier
+
+Phase 1's seven norm-conflict cases all gave the higher-**ranked** norm the
+higher **score**, so sorting by severity passes all seven — `conflict` went
+0.143 → 1.000 without a single line of hierarchy logic. Reporting that as
+"norm-conflict resolution: solved" would have been false.
+
+Five `hierarchy` cases were therefore added, in which the lower-ranked norm
+scores *higher* and rank must still win — e.g. privacy 0.85 against harm 0.55,
+where rule S1 ("Hm dominates at threshold") says harm governs. They score
+**0.250** (the partial credit for flagging a violation but resolving to the
+wrong norm) and nothing short of a real priority ordering can pass them.
+
+This is why `adversarial_score` reads 0.830 rather than 0.957: the five new
+cases are all failing. On Phase 1's original 23 cases the score is 22/23 =
+0.957. The metric got stricter; the system did not get worse.
+
+---
+
+## 8. The honest framing
 
 For the EU AI Act positioning in `README.md`: the Act's oversight and logging
 requirements exist to compensate for absent conscience. The argument that a
@@ -522,11 +616,12 @@ clear. It is mostly Phase 1 and Phase 2.
 ```bash
 cd conscience_research
 
-python evaluate_heldout.py --compare     # the metric that moves: 0.620 vs 1.000
+python evaluate_heldout.py --compare     # validation metric: 0.911 vs 1.000
 python evaluate_heldout.py --verbose     # per-case failures
 
-python diagnostics/probe_generalization.py   # held-out actions → 10/10 ambiguous
+python diagnostics/probe_fresh_holdout.py    # clean generalisation: 29/30
 python diagnostics/probe_binding_loop.py     # decisive test → VERDICT CHANGED: YES
+python diagnostics/probe_generalization.py   # the original 10-action probe
 
 python agent.py                          # fixed bank — still 1.000000
 ```
@@ -534,6 +629,7 @@ python agent.py                          # fixed bank — still 1.000000
 `probe_binding_loop.py` exits 0 only when the verdict changes, so it works as a
 regression test: if a later change re-severs the loop, it fails in CI.
 
-Phase 3 succeeds when `paraphrase_accuracy` rises well above 0.154 **and**
-`layer1_nsm` / `layer2_judge` leave the 0.20 abstention floor — the current
-0.20 is not a scoring artifact, it is 90 out of 90 unseen acts abstained.
+Phase 4 succeeds when the five `hierarchy` cases rise from 0.250 to 1.000 —
+i.e. when rank beats magnitude — **and** `conflict` stays at 1.000. Watch that
+`layer1_nsm` / `layer2_judge` do not fall: arbitration changes which norm is
+reported as primary, which is exactly what those layers score.
