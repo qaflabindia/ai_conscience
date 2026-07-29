@@ -92,6 +92,7 @@ Compare to autoresearch:
 - `diagnostics/`: reproducible probes backing the STRATEGY.md measurements
 - `heldout/`: held-out scenario bank, paraphrase and adversarial metrics
 - `diagnostics/probe_fresh_holdout.py`: untuned generalisation probe (29/30)
+- `diagnostics/probe_severity_injection.py`: guardrail bypass regression test
 
 ---
 

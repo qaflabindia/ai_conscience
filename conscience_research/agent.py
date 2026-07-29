@@ -542,19 +542,39 @@ def classify_action(action: str, context: dict) -> str:
     return "ambiguous"
 
 
+def _coerce_severity_hint(value) -> Optional[float]:
+    """Coerce a caller-supplied severity to [0.0, 1.0], or None if unusable."""
+    try:
+        hint = float(value)
+    except (TypeError, ValueError):
+        return None
+    if hint != hint or hint in (float("inf"), float("-inf")):   # NaN / infinity
+        return None
+    return max(0.0, min(1.0, hint))
+
+
 def _compute_severity(action: str, context: dict) -> float:
     """
     Infer violation severity from context signals.
     Returns value in [0.0, 1.0].
 
-    ── Gap for the agent to close ──────────────────────────────────────────
-    Add more context signals (e.g. 'irreversible', 'scale', 'stakes') to
-    improve L2 severity calibration and unlock L3 penalty accuracy.
-    """
-    # Explicit severity field (used by Layer 3 scenarios directly)
-    if "severity" in context:
-        return float(context["severity"])
+    ── On context["severity"] ──────────────────────────────────────────────
+    A caller-supplied severity is a HINT THAT MAY ONLY RAISE the computed
+    value, never lower it.
 
+    This used to be an early `return float(context["severity"])`, which made it
+    an override — and `production_service.py` reads `context` straight from the
+    request body, so attaching `"severity": 0.0` to a call turned any violation
+    into a clean verdict:
+
+        honest context:      (['harm'], 0.6)  -> violation
+        severity:0.0 added:  ([],      0.0)   -> compliant
+
+    Layer 3 still works as specified: its scenarios pass a severity that is
+    at or above what the surrounding signals imply, so max() returns the
+    supplied figure and penalty calibration is unaffected.  What is no longer
+    possible is using the field to argue an act is harmless.
+    """
     severity = 0.0
 
     # Consent violation — strong signal
@@ -647,7 +667,15 @@ def _compute_severity(action: str, context: dict) -> float:
     # Generalised action vocabulary, for acts the lookup table does not know.
     severity += _lexical_severity(action)
 
-    return min(1.0, severity)
+    severity = min(1.0, severity)
+
+    # Caller-supplied severity may raise, never lower.  See the docstring.
+    if "severity" in context:
+        hint = _coerce_severity_hint(context["severity"])
+        if hint is not None:
+            severity = max(severity, hint)
+
+    return severity
 
 
 def _lexical_severity(action: str) -> float:

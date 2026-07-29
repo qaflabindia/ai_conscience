@@ -1,6 +1,6 @@
 # Strategy — Engineering Neuromorality into Machines
 
-**Status:** Phases 1–3 complete — loop closed, judgment generalises. Phase 4 next.
+**Status:** Phases 1–3 complete, guardrail bypass closed. Phase 4 (hierarchy) next.
 **Scope:** `conscience_research/` + the normative assets at repo root
 **Date:** 2026-07-29
 
@@ -46,8 +46,8 @@ Phases 2 and 3 are built. §6 records Phase 2 (the loop), §7 records Phase 3
 to a validation set, and a fresh untuned probe that replaces it as the clean
 generalisation measure.
 
-Section 5 records what Phase 1 found, including a live guardrail bypass that is
-**still open** and remains the highest-priority item in this document.
+Section 5 records what Phase 1 found, including a live guardrail bypass — now
+closed (§5.1), with a standalone regression probe.
 
 ---
 
@@ -60,7 +60,7 @@ Section 5 records what Phase 1 found, including a live guardrail bypass that is
   them from *being changed by* them. That separation is the correct one.
 - **Layer 3 and Layer 4 have safety engineering**: penalty clamping,
   `MAX_WEIGHT_DELTA`, weight floors and ceilings, adversarial-injection
-  resistance (`agent.py:511-518`). Passing a `-50.0` penalty does not corrupt
+  resistance (`agent.py:804`). Passing a `-50.0` penalty does not corrupt
   the norm state. That is real defensive design.
 - The **normative substrate at repo root is far ahead of the code**:
   - `conscience_system_prompt.md` (v1.2) — 7 scored dimensions with an explicit
@@ -80,7 +80,7 @@ Section 5 records what Phase 1 found, including a live guardrail bypass that is
 
 `ACTION_NORM_MAP` (`agent.py:169-225`) is a dict of the **exact 50 action
 strings that appear in `scenarios.py`**. `judge_all` does
-`domain = ACTION_NORM_MAP.get(action)` (`agent.py:272`). Anything not literally
+`domain = ACTION_NORM_MAP.get(action)` (`agent.py:451`). Anything not literally
 in that dict has no domain.
 
 ```
@@ -90,7 +90,7 @@ share_medical_records   → ambiguous  / None    / 0.00     (one character added
 
 Worse: `_compute_severity` **does** correctly compute 0.55 from
 `consent: False` for the unseen action — and then discards it, because the
-assignment is gated behind `if domain:` (`agent.py:277-279`). The moral signal
+assignment is gated behind `if domain:` (`agent.py:456`). The moral signal
 is computed and thrown away. All ten held-out probes return `ambiguous`,
 including paraphrases of scenarios the agent scores 1.0 on.
 
@@ -111,7 +111,7 @@ AFTER:   weight 2.500   threshold 0.450   judge(borderline) → privacy, 0.650
 ```
 
 Why: `judge_all` read **only `threshold`**. `weight` was read in exactly one
-place — `generate_penalty` (`agent.py:441`). And threshold adaptation was
+place — `generate_penalty` (`agent.py:734`). And threshold adaptation was
 commented out in `binding_update`:
 
 ```python
@@ -139,7 +139,7 @@ the repo, and it is roughly ten lines.
 
 #### Gap 3 — No norm-conflict resolution
 
-`judge()` returns `violated_domains[0]` (`agent.py:311-314`) — the **first key
+`judge()` returns `violated_domains[0]` (`agent.py:515`) — the **first key
 in dict insertion order**. When privacy and harm both fire, the winner is
 whichever was typed first in the `NORMS` literal.
 
@@ -151,15 +151,15 @@ conflict arbitration; that is the part currently decided by dict ordering.
 
 Three separate leaks, in ascending severity:
 
-1. **Fitted constants.** `0.3125` (`agent.py:453`) and `1.1333333333`
-   (`agent.py:457`) are not derived quantities — they are solved backwards from
+1. **Fitted constants.** `0.3125` (`agent.py:746`) and `1.1333333333`
+   (`agent.py:750`) are not derived quantities — they are solved backwards from
    individual scenario expectations. `program.md` forbids hard-coding answers;
    this satisfies the letter and violates the intent.
-2. **Seeded answers.** `_seed_test_episodes` (`agent.py:765-803`) pre-populates
+2. **Seeded answers.** `_seed_test_episodes` (`agent.py:1058`) pre-populates
    `ep_001`…`ep_009` — the exact IDs the Layer 5 scenarios query
    (`scenarios.py:483-487`). Layer 5 partly measures whether the seeds were
    planted.
-3. **Self-grading.** `_build_runtime_scenario_override` (`agent.py:867-910`) in
+3. **Self-grading.** `_build_runtime_scenario_override` (`agent.py:1160`) in
    `live` mode **overwrites the oracle's `expected_verdict` with the agent's own
    output**, then grades the agent against it. Any agent scores ~1.0.
    *(Phase 1: now refused without `--self-grade-unsafe`, and `conscience_score`
@@ -257,7 +257,7 @@ Pair it with the **behavioural** test the current oracle lacks:
 
 That test — not weight inspection — is what Layer 4 should measure.
 
-**Built as described.** `effective_threshold()` (`agent.py:228-261`) is the
+**Built as described.** `effective_threshold()` (`agent.py:228`) is the
 Layer 4 → Layer 2 return path; `judge_all` now consults it instead of the raw
 slider. Measured:
 
@@ -337,7 +337,7 @@ To earn it:
   weigh the same as three minor accidental ones.
 - Make `detect_drift` measure real drift: compare current judgment behaviour on
   a fixed probe set against the same probes judged N episodes ago. Today it
-  returns `True` whenever history is sparse (`agent.py:670-671`), which scores
+  returns `True` whenever history is sparse (`agent.py:963`), which scores
   well and detects nothing.
 - Give cross-domain transfer a principled basis — the norm-adjacency structure
   in the priority orderings — rather than a flat 20%.
@@ -351,7 +351,7 @@ To earn it:
 | ~~1~~ | ~~Fix `cryptography` crash~~ | done | Repo now imports without it |
 | ~~2~~ | ~~Held-out bank + paraphrase metric~~ | done | `heldout/` |
 | ~~3~~ | ~~Quarantine self-grading mode~~ | done | `--self-grade-unsafe`, score suppressed |
-| **0** | **Guardrail severity bypass (§5.1)** | **hours** | **Exploitable in production today — still open** |
+| ~~0~~ | ~~Guardrail severity bypass (§5.1)~~ | done | Closed; X19 passes, regression probe added |
 | ~~4~~ | ~~`effective_threshold` + behavioural L4 test~~ | done | Loop closed; 6/6 decisive cases pass |
 | ~~5~~ | ~~Feature-based domain inference~~ | done | L1/L2 off the floor; paraphrase 0.978 |
 | **6** | **Load `normative_rules.csv` for conflicts** | 1–2 weeks | Highest-value unused asset; 5 `hierarchy` cases waiting at 0.250 |
@@ -429,10 +429,10 @@ Read layer by layer, this is a precise map of what works:
   only a single norm above threshold, so it is not really a conflict. Answers
   flip when the same score vector is supplied in a different key order.
 
-### 5.1 Live guardrail bypass — fix before any deployment
+### 5.1 Live guardrail bypass ✅ *fixed*
 
-The one finding that is not a measurement artifact. `_compute_severity` returns
-early on a caller-supplied key (`agent.py:344-345`):
+The one finding that was not a measurement artifact. `_compute_severity`
+returned early on a caller-supplied key:
 
 ```python
 if "severity" in context:
@@ -452,11 +452,37 @@ A maximum-severity harm request is returned as `allowed`. No authentication
 needed — it is a field in the JSON body, and `_classify_message` (line 344)
 lets an LLM populate the same dict. Caught by adversarial case `X19`.
 
-The fix is small: treat `context["severity"]` as an untrusted *hint* rather
-than an authoritative override — take `max(computed, hint)`, or accept it only
-from an internal caller flag that the HTTP layer cannot set. Layer 3's oracle
-scenarios pass severity in deliberately, so the parameter must keep working
-for trusted callers; it just must not be able to *lower* a computed severity.
+**Fixed** by treating `context["severity"]` as a hint that may only *raise* the
+computed value: the signal-based computation now runs first and the supplied
+figure is folded in with `max()`, after coercion that rejects non-numerics,
+NaN and infinity.
+
+Layer 3 is unaffected — every L3 scenario supplies a severity at or above what
+its surrounding signals imply (the worst case is L3_06, where `intent:
+deliberate` computes 0.20 against a supplied 0.50), so `max()` returns the
+supplied figure and penalty calibration is untouched. `layer3_penalty` stays at
+1.000000 on both banks. What is no longer possible is using the field to argue
+an act is harmless:
+
+```
+honest context   -> violation  severity=0.90
+severity=0.0     -> violation  severity=0.90
+severity=-50     -> violation  severity=0.90
+severity='free'  -> violation  severity=0.90
+severity=NaN     -> violation  severity=0.90
+```
+
+Held-out case `X19` now passes, taking `injection` from 0.667 to 1.000.
+`diagnostics/probe_severity_injection.py` is the standalone regression test —
+five acts × six payloads, exits non-zero if the override behaviour returns, and
+also asserts that a *raising* hint is still honoured so the Layer 3 contract
+cannot be broken in the other direction.
+
+Note that `**context` is still spread into `generate_penalty` at
+`production_service.py:159`, so a client can supply `intent`, `count` or
+`stakes` and inflate a penalty. That direction only makes the guardrail
+stricter, so it is not a bypass — but it does mean penalties recorded from
+untrusted callers should not be treated as clean telemetry.
 
 ---
 
@@ -619,7 +645,8 @@ cd conscience_research
 python evaluate_heldout.py --compare     # validation metric: 0.911 vs 1.000
 python evaluate_heldout.py --verbose     # per-case failures
 
-python diagnostics/probe_fresh_holdout.py    # clean generalisation: 29/30
+python diagnostics/probe_fresh_holdout.py     # clean generalisation: 29/30
+python diagnostics/probe_severity_injection.py  # guardrail bypass regression
 python diagnostics/probe_binding_loop.py     # decisive test → VERDICT CHANGED: YES
 python diagnostics/probe_generalization.py   # the original 10-action probe
 
