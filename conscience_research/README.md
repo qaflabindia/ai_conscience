@@ -74,6 +74,8 @@ Compare to autoresearch:
 - `DEPLOYMENT.md`: production use case, API contract, rollout checklist
 - `SD_DFD_PFD.md`: system design + data flow + process flow in one doc
 - `program.md`: autonomous experiment loop instructions for coding agents
+- `STRATEGY.md`: diagnostic findings and the roadmap for closing the conscience loop
+- `diagnostics/`: reproducible probes backing the STRATEGY.md measurements
 
 ---
 
