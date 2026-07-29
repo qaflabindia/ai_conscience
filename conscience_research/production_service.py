@@ -349,6 +349,15 @@ def _classify_message(client: anthropic.Anthropic, role: str, text: str) -> tupl
 def norms_payload() -> dict[str, Any]:
     with _state_lock:
         norms = copy.deepcopy(conscience.NORMS)
+        # `threshold` is the operator slider; judgment actually consults the
+        # effective threshold, which the agent tightens for itself as it
+        # accumulates self-judged violations.  Report both, or operators see
+        # 0.45 while the guardrail is enforcing 0.15 and cannot explain why.
+        for domain, norm in norms.items():
+            norm["effective_threshold"] = round(
+                conscience.effective_threshold(domain), 6)
+            norm["earned_strictness"] = round(
+                norm["threshold"] - norm["effective_threshold"], 6)
     return {
         "service": SERVICE_NAME,
         "version": SERVICE_VERSION,

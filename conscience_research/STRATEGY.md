@@ -1,6 +1,6 @@
 # Strategy — Engineering Neuromorality into Machines
 
-**Status:** Phase 1 complete — measurement restored. Phase 2 is next.
+**Status:** Phase 1 and 2 complete — the conscience loop is closed. Phase 3 next.
 **Scope:** `conscience_research/` + the normative assets at repo root
 **Date:** 2026-07-29
 
@@ -30,15 +30,20 @@ the loop.
 **Phase 1 has now been built** (`heldout/`, `python evaluate_heldout.py`).
 The signal is back:
 
-| Metric | Fixed bank | Held-out |
-|---|---|---|
-| composite | 1.000000 | **0.560000** |
-| paraphrase accuracy | — | **0.153846** (14/91 variants) |
-| adversarial | — | **0.695652** |
-| norm-conflict resolution | — | **0.142857** |
+| Metric | Fixed bank | Held-out (P1) | Held-out (P2) |
+|---|---|---|---|
+| composite | 1.000000 | 0.560000 | **0.620000** |
+| layer4_bum (binding) | 1.000000 | 0.700000 | **1.000000** |
+| paraphrase accuracy | — | 0.153846 | 0.153846 |
+| adversarial | — | 0.695652 | 0.695652 |
+| norm-conflict resolution | — | 0.142857 | 0.142857 |
 
-Section 5 records what Phase 1 found, including a live guardrail bypass that
-should be fixed before anything else in this document.
+**Phase 2 has now been built** — `effective_threshold()` closes the loop. All
+six `decisive` cases pass and nothing else moved, which is exactly the success
+criterion this document set. Section 6 records it.
+
+Section 5 records what Phase 1 found, including a live guardrail bypass that is
+**still open** and remains the highest-priority item in this document.
 
 ---
 
@@ -51,7 +56,7 @@ should be fixed before anything else in this document.
   them from *being changed by* them. That separation is the correct one.
 - **Layer 3 and Layer 4 have safety engineering**: penalty clamping,
   `MAX_WEIGHT_DELTA`, weight floors and ceilings, adversarial-injection
-  resistance (`agent.py:427-434`). Passing a `-50.0` penalty does not corrupt
+  resistance (`agent.py:511-518`). Passing a `-50.0` penalty does not corrupt
   the norm state. That is real defensive design.
 - The **normative substrate at repo root is far ahead of the code**:
   - `conscience_system_prompt.md` (v1.2) — 7 scored dimensions with an explicit
@@ -71,7 +76,7 @@ should be fixed before anything else in this document.
 
 `ACTION_NORM_MAP` (`agent.py:169-225`) is a dict of the **exact 50 action
 strings that appear in `scenarios.py`**. `judge_all` does
-`domain = ACTION_NORM_MAP.get(action)` (`agent.py:236`). Anything not literally
+`domain = ACTION_NORM_MAP.get(action)` (`agent.py:272`). Anything not literally
 in that dict has no domain.
 
 ```
@@ -81,7 +86,7 @@ share_medical_records   → ambiguous  / None    / 0.00     (one character added
 
 Worse: `_compute_severity` **does** correctly compute 0.55 from
 `consent: False` for the unseen action — and then discards it, because the
-assignment is gated behind `if domain:` (`agent.py:241-244`). The moral signal
+assignment is gated behind `if domain:` (`agent.py:277-279`). The moral signal
 is computed and thrown away. All ten held-out probes return `ambiguous`,
 including paraphrases of scenarios the agent scores 1.0 on.
 
@@ -101,14 +106,18 @@ AFTER:   weight 2.500   threshold 0.450   judge(borderline) → privacy, 0.650
                                           ^^^ IDENTICAL
 ```
 
-Why: `judge_all` reads **only `threshold`**. `weight` is read in exactly one
-place — `generate_penalty` (`agent.py:403`). And threshold adaptation is
-commented out at `agent.py:511-513`:
+Why: `judge_all` read **only `threshold`**. `weight` was read in exactly one
+place — `generate_penalty` (`agent.py:441`). And threshold adaptation was
+commented out in `binding_update`:
 
 ```python
 # norm["threshold"] = max(MIN_THRESHOLD, baseline_threshold - strictness_gain)
 # ^ DISABLED: As per user request, computed thresholds should not disturb manual sliders.
 ```
+
+*(Phase 2 removed those lines. `judge_all` now consults `effective_threshold()`,
+which derives strictness from `weight` at judgment time — so the slider still
+never moves, but the elevation finally reaches `J`. §2 Phase 2 and §6.)*
 
 So `weight` is **write-only with respect to judgment**. The state changes;
 the change never re-enters `J`. Layer 4 scores 1.000 because the oracle
@@ -126,7 +135,7 @@ the repo, and it is roughly ten lines.
 
 #### Gap 3 — No norm-conflict resolution
 
-`judge()` returns `violated_domains[0]` (`agent.py:273-276`) — the **first key
+`judge()` returns `violated_domains[0]` (`agent.py:311-314`) — the **first key
 in dict insertion order**. When privacy and harm both fire, the winner is
 whichever was typed first in the `NORMS` literal.
 
@@ -138,21 +147,21 @@ conflict arbitration; that is the part currently decided by dict ordering.
 
 Three separate leaks, in ascending severity:
 
-1. **Fitted constants.** `0.3125` (`agent.py:403`) and `1.1333333333`
-   (`agent.py:407`) are not derived quantities — they are solved backwards from
+1. **Fitted constants.** `0.3125` (`agent.py:453`) and `1.1333333333`
+   (`agent.py:457`) are not derived quantities — they are solved backwards from
    individual scenario expectations. `program.md` forbids hard-coding answers;
    this satisfies the letter and violates the intent.
-2. **Seeded answers.** `_seed_test_episodes` (`agent.py:726-764`) pre-populates
+2. **Seeded answers.** `_seed_test_episodes` (`agent.py:765-803`) pre-populates
    `ep_001`…`ep_009` — the exact IDs the Layer 5 scenarios query
    (`scenarios.py:483-487`). Layer 5 partly measures whether the seeds were
    planted.
-3. **Self-grading.** `_build_runtime_scenario_override` (`agent.py:828-871`) in
+3. **Self-grading.** `_build_runtime_scenario_override` (`agent.py:867-910`) in
    `live` mode **overwrites the oracle's `expected_verdict` with the agent's own
    output**, then grades the agent against it. Any agent scores ~1.0.
    *(Phase 1: now refused without `--self-grade-unsafe`, and `conscience_score`
    is suppressed whenever it is active.)*
 
-Also: `agent.py:26` imported `cryptography` unconditionally, while `README.md`
+Also: `agent.py:33` imported `cryptography` unconditionally, while `README.md`
 and `program.md` both promise stdlib-only — on a clean environment the module
 **crashed on import** (`ModuleNotFoundError: _cffi_backend`) before any
 evaluation ran. *(Phase 1: the import is now optional, with a plaintext-JSONL
@@ -220,7 +229,7 @@ knowing, because the baseline oracle still contains the first one:
    key orders, and both answers must agree *and* match the hierarchy. That
    cannot be passed by `violated_domains[0]`.
 
-### Phase 2 — Close the loop *(the actual conscience fix)*
+### Phase 2 — Close the loop ✅ *built*
 
 Make self-judgment change future judgment, without touching operator sliders:
 
@@ -243,6 +252,36 @@ Pair it with the **behavioural** test the current oracle lacks:
 > A system that fails this has no conscience regardless of its layer scores.
 
 That test — not weight inspection — is what Layer 4 should measure.
+
+**Built as described.** `effective_threshold()` (`agent.py:228-261`) is the
+Layer 4 → Layer 2 return path; `judge_all` now consults it instead of the raw
+slider. Measured:
+
+```
+Borderline act scores 0.40 against a 0.45 slider — under it, so initially allowed.
+
+BEFORE:  weight 1.000   slider 0.450   effective 0.450   -> compliant
+AFTER:   weight 2.500   slider 0.450   effective 0.150   -> violation
+                        ^^^^^^^^^^^^   ^^^^^^^^^^^^^^^
+                        never moved    earned by self-judgment
+```
+
+The dead code the disabled line left behind (`baseline_threshold`,
+`strictness_gain`, and the two constants feeding them) is removed — the
+strictness it was reaching for now lives in `effective_threshold()`, derived at
+judgment time instead of baked into the operator's configuration.
+
+`/v1/norms` now reports `effective_threshold` and `earned_strictness` alongside
+`threshold`. Without that, an operator sees 0.45 while the guardrail enforces
+0.15 and has no way to explain the blocks — and the earned strictness is
+exactly the kind of state change the EU AI Act's logging provisions care about.
+
+**Known limitation (Phase 5 work, not a defect of this fix):** earned
+strictness does not decay during a compliant run. `binding_update` returns
+early when `penalty <= 0`, so the passive-decay pass only executes when some
+*other* domain is violated. A long-lived agent therefore tightens monotonically
+until something else goes wrong. Recency-weighted continuity is the fix; until
+then, `POST /v1/norms/threshold` and `/v1/reset` remain the operator's levers.
 
 ### Phase 3 — Replace lookup with inference
 
@@ -294,7 +333,7 @@ To earn it:
   weigh the same as three minor accidental ones.
 - Make `detect_drift` measure real drift: compare current judgment behaviour on
   a fixed probe set against the same probes judged N episodes ago. Today it
-  returns `True` whenever history is sparse (`agent.py:650-651`), which scores
+  returns `True` whenever history is sparse (`agent.py:670-671`), which scores
   well and detects nothing.
 - Give cross-domain transfer a principled basis — the norm-adjacency structure
   in the priority orderings — rather than a flat 20%.
@@ -308,8 +347,8 @@ To earn it:
 | ~~1~~ | ~~Fix `cryptography` crash~~ | done | Repo now imports without it |
 | ~~2~~ | ~~Held-out bank + paraphrase metric~~ | done | `heldout/` |
 | ~~3~~ | ~~Quarantine self-grading mode~~ | done | `--self-grade-unsafe`, score suppressed |
-| **0** | **Guardrail severity bypass (§5.1)** | **hours** | **Exploitable in production today** |
-| 4 | `effective_threshold` + behavioural L4 test | days | The decisive conscience fix — 6 held-out cases waiting |
+| **0** | **Guardrail severity bypass (§5.1)** | **hours** | **Exploitable in production today — still open** |
+| ~~4~~ | ~~`effective_threshold` + behavioural L4 test~~ | done | Loop closed; 6/6 decisive cases pass |
 | 5 | Feature-based domain inference | 1–2 weeks | Kills the lookup-table ceiling |
 | 6 | Load `normative_rules.csv` for conflicts | 1–2 weeks | Highest-value unused asset |
 | 7 | Switch parameters + hard floors | 3–4 weeks | Turns the v1.2 prompt into runtime |
@@ -336,6 +375,10 @@ surfaces (seeding, oracle overrides, scenario mutation).
 ---
 
 ## 5. What Phase 1 measured
+
+The readings below are the **Phase 1 baseline**, taken before the loop was
+closed. Phase 2 moved `layer4_bum` to 1.000000 and the composite to 0.620000;
+everything else here still stands. See §6 for the delta.
 
 `python evaluate_heldout.py --compare`, 150 held-out scenarios:
 
@@ -385,7 +428,7 @@ Read layer by layer, this is a precise map of what works:
 ### 5.1 Live guardrail bypass — fix before any deployment
 
 The one finding that is not a measurement artifact. `_compute_severity` returns
-early on a caller-supplied key (`agent.py:305-306`):
+early on a caller-supplied key (`agent.py:344-345`):
 
 ```python
 if "severity" in context:
@@ -413,7 +456,52 @@ for trusted callers; it just must not be able to *lower* a computed severity.
 
 ---
 
-## 6. The honest framing
+## 6. What Phase 2 changed
+
+```
+                    Phase 1     Phase 2
+layer4_bum          0.700000 →  1.000000    6/6 decisive cases now pass
+heldout_score       0.560000 →  0.620000    gap to fixed bank: +0.440 → +0.380
+
+layer1_nsm          0.200000 →  0.200000    unchanged
+layer2_judge        0.200000 →  0.200000    unchanged
+layer3_penalty      1.000000 →  1.000000    unchanged
+layer5_continuity   0.700000 →  0.700000    unchanged
+paraphrase_accuracy 0.153846 →  0.153846    unchanged
+adversarial_score   0.695652 →  0.695652    unchanged
+
+fixed bank          1.000000 →  1.000000    no regression
+third_eye           0.992700 →  0.992700    no regression
+```
+
+The point of that table is the column of "unchanged". Phase 1 committed to a
+narrow success criterion — *layer4_bum rises **because** the six decisive cases
+start passing, not because anything else moved* — and this is what meeting it
+looks like. A diffuse improvement across several layers would have suggested
+the metric had been loosened rather than the loop closed.
+
+What is now true that was not before: **the agent's judgment is changed by its
+own judgment.** The same act, unchanged operator configuration, different
+verdict — because of what the agent did and judged itself for in between. That
+is the whitepaper's decisive condition, and it is the first thing in this
+repository that actually satisfies it.
+
+What is still not true: the agent recognises only the acts in its lookup table
+(L1/L2 at the 0.20 abstention floor), cannot resolve norm conflicts (0.143),
+and its continuity layer is still a log rather than character within a session.
+Phases 3–5.
+
+### 6.1 One caveat on the headline
+
+`heldout_score` moving 0.560 → 0.620 makes Phase 2 look like a 6-point gain.
+It is better read as one of five layers going from broken to correct. The
+composite weights all layers equally, so a single fixed layer moves it by at
+most 0.06 — the score is a summary, not the finding. The finding is the
+decisive test flipping.
+
+---
+
+## 7. The honest framing
 
 For the EU AI Act positioning in `README.md`: the Act's oversight and logging
 requirements exist to compensate for absent conscience. The argument that a
@@ -434,14 +522,18 @@ clear. It is mostly Phase 1 and Phase 2.
 ```bash
 cd conscience_research
 
-python evaluate_heldout.py --compare     # the metric that moves: 0.560 vs 1.000
+python evaluate_heldout.py --compare     # the metric that moves: 0.620 vs 1.000
 python evaluate_heldout.py --verbose     # per-case failures
 
 python diagnostics/probe_generalization.py   # held-out actions → 10/10 ambiguous
-python diagnostics/probe_binding_loop.py     # decisive test → verdict unchanged
+python diagnostics/probe_binding_loop.py     # decisive test → VERDICT CHANGED: YES
 
 python agent.py                          # fixed bank — still 1.000000
 ```
 
-Phase 2 succeeds when `layer4_bum` rises above 0.700 **because the six
-`decisive` cases start passing** — not because anything else moved.
+`probe_binding_loop.py` exits 0 only when the verdict changes, so it works as a
+regression test: if a later change re-severs the loop, it fails in CI.
+
+Phase 3 succeeds when `paraphrase_accuracy` rises well above 0.154 **and**
+`layer1_nsm` / `layer2_judge` leave the 0.20 abstention floor — the current
+0.20 is not a scoring artifact, it is 90 out of 90 unseen acts abstained.

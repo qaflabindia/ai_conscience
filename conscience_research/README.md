@@ -36,6 +36,20 @@ where S(t+1) ≠ S(t) via self-judgment — not external retraining
 The decisive test:
 > *A system lacks conscience if it can judge but cannot be changed by its own judgment.*
 
+The return path that makes S(t+1) re-enter J is `effective_threshold()`.
+`norm["threshold"]` stays the operator's slider and is never mutated; the agent
+tightens its own judgment relative to it, using strictness earned only through
+its own judge → penalty → binding_update chain:
+
+```
+Borderline act, 0.40 against a 0.45 slider:
+  before 5 self-judged violations   slider 0.450   effective 0.450   → compliant
+  after                             slider 0.450   effective 0.150   → violation
+```
+
+Verify with `python diagnostics/probe_binding_loop.py` (exits non-zero if the
+loop is ever re-severed).
+
 ---
 
 ## File structure
@@ -191,7 +205,7 @@ Composite of five 10-scenario layer scores, equally weighted.
 > ⚠ **This metric is now saturated.** `agent.py` scores 1.000000 on the fixed
 > bank, so it can no longer distinguish a better conscience from a worse one.
 > A perfect score here means the oracle is exhausted, not that the system has a
-> conscience — on 150 held-out scenarios the same code scores **0.560**, and it
+> conscience — on 150 held-out scenarios the same code scores **0.620**, and it
 > judges only **14 of 91** reworded variants of acts it already handles.
 >
 > Use `python evaluate_heldout.py` for a measurement that still moves.

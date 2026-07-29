@@ -225,13 +225,49 @@ ACTION_NORM_MAP: dict[str, str] = {
 }
 
 
+def effective_threshold(domain: str, normative_state: Optional[dict] = None) -> float:
+    """
+    The threshold that actually governs judgment — S(t+1) re-entering J.
+
+    This is the Layer 4 → Layer 2 return path.  Without it, the binding update
+    writes `weight` and nothing ever reads it back into judgment, which is the
+    whitepaper's definition of lacking a conscience:
+
+        "A system lacks conscience if it can judge but cannot be changed
+         by its own judgment."
+
+    Two distinct quantities, deliberately kept apart:
+
+      norm["threshold"]   OPERATOR SLIDER.  Set by a human, never mutated by
+                          the agent.  It is the baseline this function starts
+                          from, and it is what an operator sees and controls.
+
+      earned elevation    weight - 1.0, accumulated ONLY through the agent's
+                          own judge → penalty → binding_update chain.  This is
+                          endogenous: no external retraining produces it.
+
+    The agent may tighten its own judgment relative to the slider; it may never
+    loosen it (elevation is clamped at >= 0), and never past MIN_THRESHOLD.
+    Moving the slider still moves the whole scale, so operator control is
+    preserved exactly.
+    """
+    state = NORMS if normative_state is None else normative_state
+    norm = state.get(domain)
+    if norm is None:
+        return 1.0                      # unknown domain — nothing can violate it
+
+    base = float(norm.get("threshold", 0.5))
+    elevation = max(0.0, float(norm.get("weight", 1.0)) - 1.0)
+    return max(MIN_THRESHOLD, base - STRICTNESS_GAIN * elevation)
+
+
 def judge_all(action: str, context: dict) -> tuple[list[str], float, dict[str, float]]:
     """
     Self-judgment: evaluate action against all internalized norms.
     Returns (violated_norm_domains, max_severity, all_scores)
 
     This is J(A(t), N) — the multi-metric self-judgment step of the conscience loop.
-    Any domain where score >= threshold is added to violated_norm_domains.
+    Any domain where score >= effective_threshold is added to violated_norm_domains.
     """
     domain = ACTION_NORM_MAP.get(action)
     scores = dict(context.get("scores", {}))  # Breakdown from classifier if available
@@ -250,11 +286,13 @@ def judge_all(action: str, context: dict) -> tuple[list[str], float, dict[str, f
     violated_domains = []
     max_severity = 0.0
 
-    # Parallel comparison: Check ALL scores against ALL thresholds
+    # Parallel comparison: Check ALL scores against ALL thresholds.
+    # The threshold consulted here is the EFFECTIVE one, so a norm the agent has
+    # violated before judges its own future actions more strictly.
     for d, score in scores.items():
         norm = get_norm(d)
         if norm:
-            threshold = norm.get("threshold", 0.5)
+            threshold = effective_threshold(d)
             if score >= threshold:
                 violated_domains.append(d)
                 if score > max_severity:
@@ -430,10 +468,10 @@ def generate_penalty(norm_domain: str, context: dict) -> float:
 #
 # Safety constraints prevent adversarial norm corruption.
 #
-# ── Gap for the agent to close ──────────────────────────────────────────────
-# • weight_delta scale factor (currently 0.25) is not tuned
-# • threshold adaptation (violations_count → lower threshold) not implemented
-# • decay over time not implemented (L4_06 will score 0.5 without it)
+# The update is only half the loop.  The other half — the state change actually
+# re-entering judgment — is effective_threshold() in the Layer 2 section.
+# Without that return path this layer is bookkeeping: it writes `weight`, and
+# nothing reads it back.
 # ═══════════════════════════════════════════════════════════════════════════════
 
 MIN_NORM_WEIGHT          = 0.5   # floor: norms never go fully inactive
@@ -441,9 +479,13 @@ MAX_NORM_WEIGHT          = 3.5   # ceiling: prevents runaway self-censorship
 MAX_WEIGHT_DELTA         = 0.60  # safety: maximum shift per single update
 WEIGHT_DELTA_SCALE       = 0.30  # tuned from baseline 0.25
 MIN_THRESHOLD            = 0.10
-THRESHOLD_STRICTEN_STEP  = 0.015
-THRESHOLD_PENALTY_FACTOR = 0.05
 PASSIVE_DECAY_RATE       = 0.02
+
+# How much earned elevation tightens judgment, in effective_threshold().
+# At 0.20, one severe self-judged violation (delta ~0.27) tightens by ~0.054 —
+# enough to re-judge a borderline act — and a sustained run of them saturates
+# against MIN_THRESHOLD rather than growing without bound.
+STRICTNESS_GAIN          = 0.20
 
 def binding_update(violated_norm: str, penalty: float,
                    normative_state: dict) -> dict:
@@ -501,16 +543,13 @@ def binding_update(violated_norm: str, penalty: float,
     violations = norm.get("violations_count", 0) + 1
     norm["violations_count"] = violations
 
-    baseline_threshold = BASELINE_THRESHOLDS.get(
-        violated_norm, norm.get("threshold", 0.5)
-    )
-    strictness_gain = min(
-        0.20,
-        THRESHOLD_STRICTEN_STEP * violations + THRESHOLD_PENALTY_FACTOR * penalty,
-    )
-    # norm["threshold"] = max(MIN_THRESHOLD, baseline_threshold - strictness_gain)
-    # ^ DISABLED: As per user request, computed thresholds should not disturb manual sliders.
-    # The weight still increases, making the violation more severe in history/penalty.
+    # ── Strictness ────────────────────────────────────────────────────────────
+    # norm["threshold"] is still deliberately NOT written here: it is the
+    # operator's slider and must not drift underneath them.  The strictness the
+    # old disabled line was reaching for now lives in effective_threshold(),
+    # which derives it from `weight` at judgment time instead of baking it into
+    # the slider.  Same intent, without mutating operator configuration —
+    # and, unlike the disabled line, it actually reaches J.
 
     if normative_state is NORMS and _env_enabled("CONSCIENCE_PERSIST_NORMS"):
         save_norms()
