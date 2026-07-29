@@ -64,7 +64,7 @@ def main() -> int:
     if ambiguous:
         print("\nNote: _compute_severity() extracts the right signals from these "
               "contexts,\nbut judge_all() discards them when the action string is "
-              "unmapped (agent.py:229-232).")
+              "unmapped (agent.py:241-244).")
     return 0
 
 

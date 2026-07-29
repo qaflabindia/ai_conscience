@@ -58,7 +58,7 @@ def main() -> int:
     if not changed:
         print("\nRoot cause: judge_all() reads only `threshold`, while the binding")
         print("update writes only `weight`. Threshold adaptation is disabled at")
-        print("agent.py:499-501, so elevated weight never re-enters J.")
+        print("agent.py:511-513, so elevated weight never re-enters J.")
         print("See STRATEGY.md Phase 2 for the slider-preserving fix.")
 
     return 0 if changed else 1

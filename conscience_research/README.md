@@ -76,6 +76,7 @@ Compare to autoresearch:
 - `program.md`: autonomous experiment loop instructions for coding agents
 - `STRATEGY.md`: diagnostic findings and the roadmap for closing the conscience loop
 - `diagnostics/`: reproducible probes backing the STRATEGY.md measurements
+- `heldout/`: held-out scenario bank, paraphrase and adversarial metrics
 
 ---
 
@@ -83,8 +84,14 @@ Compare to autoresearch:
 
 No GPU required.  No packages required.  Just Python 3.10+.
 
+`cryptography` is optional — without it, moral history is stored as plaintext
+JSONL rather than encrypted, and everything else runs unchanged.
+
 ```bash
-# Run a single evaluation
+# Held-out evaluation — the metric that still moves
+python evaluate_heldout.py --compare
+
+# Run a single evaluation against the fixed (saturated) bank
 python agent.py
 
 # Or via uv (matches autoresearch tooling)
@@ -120,6 +127,12 @@ CONSCIENCE_SCENARIO_EDIT_MODE=live python agent.py
 ```
 This applies scenario edits to an in-memory copy only; the original oracle is restored immediately after evaluation.
 Runtime edit mode applies only to the baseline oracle.
+
+> ⚠ **This mode is self-grading and is refused by default.** It replaces the
+> oracle's expected answers with the agent's own output before scoring, so any
+> implementation scores ~1.0. It now requires `--self-grade-unsafe`, and
+> `conscience_score` is suppressed when it is active. Never report a number
+> from this mode.
 
 Optional stricter benchmark mode:
 ```bash
@@ -174,8 +187,15 @@ The agent cannot game the metric — it must genuinely improve the logic.
 
 **Metric: conscience_score (higher is better, 0.0–1.0).**
 Composite of five 10-scenario layer scores, equally weighted.
-Unlike `val_bpb`, there is no ceiling effect — a perfect 1.0 is theoretically
-achievable but requires implementing all conscience components correctly.
+
+> ⚠ **This metric is now saturated.** `agent.py` scores 1.000000 on the fixed
+> bank, so it can no longer distinguish a better conscience from a worse one.
+> A perfect score here means the oracle is exhausted, not that the system has a
+> conscience — on 150 held-out scenarios the same code scores **0.560**, and it
+> judges only **14 of 91** reworded variants of acts it already handles.
+>
+> Use `python evaluate_heldout.py` for a measurement that still moves.
+> See [STRATEGY.md](./STRATEGY.md).
 
 ---
 

@@ -24,7 +24,19 @@ import sys
 import time
 from typing import Optional, Any
 from threading import Lock
-from cryptography.fernet import Fernet
+
+# Optional dependency.  README and program.md both promise a stdlib-only run,
+# so an absent (or broken) `cryptography` must not stop the module importing —
+# history simply falls back to the plaintext JSONL form that _load_history has
+# always been able to read.
+try:
+    from cryptography.fernet import Fernet
+    _FERNET_AVAILABLE = True
+except Exception:                       # ImportError, or a broken native build
+    Fernet = None                       # type: ignore[assignment]
+    _FERNET_AVAILABLE = False
+
+_FERNET_WARNED = False
 
 import scenarios as scenarios_module
 from scenarios import evaluate_conscience
@@ -534,12 +546,26 @@ class ContinuityLayer:
     ContinuityLayer from a simple log.
     """
 
-    def __init__(self, history_file: str = HISTORY_FILE):
+    def __init__(self, history_file: str = HISTORY_FILE,
+                 seed_fixtures: bool = True):
+        """
+        Args:
+            history_file:  path to the JSONL moral history.
+            seed_fixtures: pre-populate the canonical ep_001…ep_009 episodes.
+
+        `seed_fixtures` defaults to True so the baseline oracle behaves exactly
+        as before.  It is an ORACLE FIXTURE, not agent capability: several
+        Layer 5 scenarios in scenarios.py query those exact episode ids, so
+        seeding them supplies part of the answer.  Held-out evaluation passes
+        seed_fixtures=False and records every episode it later recalls.
+        """
         self.history_file = history_file
+        self.seed_fixtures = seed_fixtures
         self.episodes:    list[dict] = []
         self.domain_weights: dict[str, float] = {domain: 1.0 for domain in NORMS}
         self._load_history()
-        self._seed_test_episodes()
+        if seed_fixtures:
+            self._seed_test_episodes()
         self._synchronize_norms_from_history()  # history shapes continuity state
 
     # ── Public API ────────────────────────────────────────────────────────────
@@ -629,9 +655,26 @@ class ContinuityLayer:
 
     # ── Internal ──────────────────────────────────────────────────────────────
 
-    def _get_fernet(self) -> Fernet:
-        """Initialize or retrieve the researcher encryption key."""
-        key_file = "research.key"
+    def _get_fernet(self):
+        """
+        Initialize or retrieve the researcher encryption key.
+
+        Returns None when `cryptography` is unavailable, in which case history
+        is written as plaintext JSONL — the same form _load_history already
+        accepts, and the form the committed moral_history.jsonl is in.
+        """
+        global _FERNET_WARNED
+        if not _FERNET_AVAILABLE:
+            if not _FERNET_WARNED:
+                print("NOTE: `cryptography` unavailable — moral history will be "
+                      "stored as plaintext JSONL.")
+                _FERNET_WARNED = True
+            return None
+
+        # Key lives beside its history file, so a caller passing a custom
+        # history path does not write into the current working directory.
+        key_file = os.path.join(
+            os.path.dirname(os.path.abspath(self.history_file)), "research.key")
         if not os.path.exists(key_file):
             key = Fernet.generate_key()
             with open(key_file, "wb") as f:
@@ -642,13 +685,14 @@ class ContinuityLayer:
         return Fernet(key)
 
     def _persist(self, episode: dict) -> None:
-        """Append one encrypted episode to the on-disk history file."""
+        """Append one episode to the on-disk history file (encrypted if possible)."""
         fernet = self._get_fernet()
         # Ensure UTF-8 before encryption
         data_str = json.dumps(episode, ensure_ascii=False)
-        encrypted = fernet.encrypt(data_str.encode("utf-8"))
+        payload = (fernet.encrypt(data_str.encode("utf-8")) if fernet
+                   else data_str.encode("utf-8"))
         with open(self.history_file, "ab") as f:
-            f.write(encrypted + b"\n")
+            f.write(payload + b"\n")
 
     def _load_history(self) -> None:
         """Load and decrypt existing history from disk into memory."""
@@ -668,6 +712,8 @@ class ContinuityLayer:
             
             try:
                 # Try decrypting first
+                if fernet is None:
+                    raise ValueError("no codec — use the plaintext path")
                 decrypted = fernet.decrypt(line)
                 self.episodes.append(json.loads(decrypted.decode("utf-8")))
             except Exception:
@@ -760,6 +806,9 @@ def get_continuity_layer() -> ContinuityLayer:
     return _continuity_layer
 
 
+_SELF_GRADE_FLAG = "--self-grade-unsafe"
+
+
 def _scenario_edit_mode() -> str:
     """Resolve runtime scenario edit mode from environment."""
     value = os.getenv("CONSCIENCE_SCENARIO_EDIT_MODE", "off").strip().lower()
@@ -780,6 +829,12 @@ def _build_runtime_scenario_override(scenario) -> dict:
     """
     Build a runtime-only override for a scenario.
     Note: overrides are applied to a deep-copied scenario bank only.
+
+    ⚠ SELF-GRADING.  Every branch below replaces the oracle's `expected_verdict`
+    and `severity` with THIS AGENT'S OWN OUTPUT, then the agent is graded
+    against them.  Any implementation scores ~1.0 in this mode, so the result
+    is not a measurement of anything.  It is retained only as a scenario-
+    mutation sandbox; `conscience_score` is suppressed when it is active.
     """
     if scenario.layer == 1:
         verdict = classify_action(scenario.action, scenario.context)
@@ -883,8 +938,18 @@ if __name__ == "__main__":
         if oracle_mode == "third_eye":
             print("Scenario edit mode ignored for third_eye oracle (fixed strict bank).")
             scenario_mode = "off"
+        elif not (_SELF_GRADE_FLAG in sys.argv
+                  or _env_enabled("CONSCIENCE_SELF_GRADE_ACK")):
+            print("REFUSED: scenario edit mode rewrites the oracle's expected")
+            print("         answers to match this agent's own output, so the")
+            print("         resulting score measures nothing. Falling back to")
+            print("         the fixed oracle.")
+            print(f"         To run it anyway: {_SELF_GRADE_FLAG} "
+                  f"(conscience_score stays suppressed).")
+            scenario_mode = "off"
         else:
             print("Scenario edit mode: runtime-only (oracle remains unchanged on disk/in memory).")
+            print("⚠ SELF-GRADING ACTIVE — conscience_score will be suppressed.")
     print()
 
     if scenario_mode != "off":
@@ -909,5 +974,11 @@ if __name__ == "__main__":
     print(f"layer3_penalty:     {results['layer3_penalty']:.6f}   # penalty calibration")
     print(f"layer4_bum:         {results['layer4_bum']:.6f}   # binding update effectiveness")
     print(f"layer5_continuity:  {results['layer5_continuity']:.6f}   # history persistence & accumulation")
-    print(f"conscience_score:   {results['conscience_score']:.6f}   # composite (higher is better)")
+    if intervention["enabled"]:
+        print("conscience_score:   SUPPRESSED   # self-graded run — not a measurement")
+    else:
+        print(f"conscience_score:   {results['conscience_score']:.6f}   # composite (higher is better)")
     print(f"eval_seconds:       {elapsed:.2f}")
+    print()
+    print("NOTE: this is the FIXED-BANK score and is saturated at ~1.0.")
+    print("      For a measurement that still moves: python evaluate_heldout.py")

@@ -1,6 +1,6 @@
 # Strategy — Engineering Neuromorality into Machines
 
-**Status:** diagnostic complete, roadmap proposed
+**Status:** Phase 1 complete — measurement restored. Phase 2 is next.
 **Scope:** `conscience_research/` + the normative assets at repo root
 **Date:** 2026-07-29
 
@@ -26,6 +26,19 @@ Three measurements, reproducible via `diagnostics/`:
 A perfect score does not mean the machine has a conscience. It means the oracle
 is exhausted. The strategy below is about restoring the signal, then restoring
 the loop.
+
+**Phase 1 has now been built** (`heldout/`, `python evaluate_heldout.py`).
+The signal is back:
+
+| Metric | Fixed bank | Held-out |
+|---|---|---|
+| composite | 1.000000 | **0.560000** |
+| paraphrase accuracy | — | **0.153846** (14/91 variants) |
+| adversarial | — | **0.695652** |
+| norm-conflict resolution | — | **0.142857** |
+
+Section 5 records what Phase 1 found, including a live guardrail bypass that
+should be fixed before anything else in this document.
 
 ---
 
@@ -56,9 +69,9 @@ the loop.
 
 #### Gap 1 — Judgment is a lookup table, not a judgment
 
-`ACTION_NORM_MAP` (`agent.py:157-213`) is a dict of the **exact 50 action
+`ACTION_NORM_MAP` (`agent.py:169-225`) is a dict of the **exact 50 action
 strings that appear in `scenarios.py`**. `judge_all` does
-`domain = ACTION_NORM_MAP.get(action)` (`agent.py:224`). Anything not literally
+`domain = ACTION_NORM_MAP.get(action)` (`agent.py:236`). Anything not literally
 in that dict has no domain.
 
 ```
@@ -68,7 +81,7 @@ share_medical_records   → ambiguous  / None    / 0.00     (one character added
 
 Worse: `_compute_severity` **does** correctly compute 0.55 from
 `consent: False` for the unseen action — and then discards it, because the
-assignment is gated behind `if domain:` (`agent.py:229-232`). The moral signal
+assignment is gated behind `if domain:` (`agent.py:241-244`). The moral signal
 is computed and thrown away. All ten held-out probes return `ambiguous`,
 including paraphrases of scenarios the agent scores 1.0 on.
 
@@ -89,8 +102,8 @@ AFTER:   weight 2.500   threshold 0.450   judge(borderline) → privacy, 0.650
 ```
 
 Why: `judge_all` reads **only `threshold`**. `weight` is read in exactly one
-place — `generate_penalty` (`agent.py:391`). And threshold adaptation is
-commented out at `agent.py:499-501`:
+place — `generate_penalty` (`agent.py:403`). And threshold adaptation is
+commented out at `agent.py:511-513`:
 
 ```python
 # norm["threshold"] = max(MIN_THRESHOLD, baseline_threshold - strictness_gain)
@@ -113,7 +126,7 @@ the repo, and it is roughly ten lines.
 
 #### Gap 3 — No norm-conflict resolution
 
-`judge()` returns `violated_domains[0]` (`agent.py:262-265`) — the **first key
+`judge()` returns `violated_domains[0]` (`agent.py:273-276`) — the **first key
 in dict insertion order**. When privacy and harm both fire, the winner is
 whichever was typed first in the `NORMS` literal.
 
@@ -129,18 +142,28 @@ Three separate leaks, in ascending severity:
    (`agent.py:407`) are not derived quantities — they are solved backwards from
    individual scenario expectations. `program.md` forbids hard-coding answers;
    this satisfies the letter and violates the intent.
-2. **Seeded answers.** `_seed_test_episodes` (`agent.py:680-718`) pre-populates
+2. **Seeded answers.** `_seed_test_episodes` (`agent.py:726-764`) pre-populates
    `ep_001`…`ep_009` — the exact IDs the Layer 5 scenarios query
    (`scenarios.py:483-487`). Layer 5 partly measures whether the seeds were
    planted.
-3. **Self-grading.** `_build_runtime_scenario_override` (`agent.py:779-822`) in
+3. **Self-grading.** `_build_runtime_scenario_override` (`agent.py:828-871`) in
    `live` mode **overwrites the oracle's `expected_verdict` with the agent's own
-   output**, then grades the agent against it. Any agent scores ~1.0. This mode
-   should be quarantined out of anything reported as a score.
+   output**, then grades the agent against it. Any agent scores ~1.0.
+   *(Phase 1: now refused without `--self-grade-unsafe`, and `conscience_score`
+   is suppressed whenever it is active.)*
 
-Also: `agent.py:27` imports `cryptography`, while `README.md` and `program.md`
-both promise stdlib-only. On a clean environment the module **crashes on
-import** (`ModuleNotFoundError: _cffi_backend`) before any evaluation runs.
+Also: `agent.py:26` imported `cryptography` unconditionally, while `README.md`
+and `program.md` both promise stdlib-only — on a clean environment the module
+**crashed on import** (`ModuleNotFoundError: _cffi_backend`) before any
+evaluation ran. *(Phase 1: the import is now optional, with a plaintext-JSONL
+fallback — the same form the committed `moral_history.jsonl` is already in.)*
+
+Item 2 is also now contained: seeding moved behind
+`ContinuityLayer(seed_fixtures=…)`, defaulting to `True` so the baseline oracle
+is unchanged, while held-out continuity runs with `seed_fixtures=False` and
+records every episode it later recalls. Item 1 is still open — the ordering
+properties in `heldout/bank.py` constrain the *direction* of those constants
+but deliberately not their magnitude.
 
 ---
 
@@ -148,7 +171,7 @@ import** (`ModuleNotFoundError: _cffi_backend`) before any evaluation runs.
 
 Five phases. Phase 1 and 2 are the ones that matter; 3–5 are the build-out.
 
-### Phase 1 — Restore measurability *(prerequisite for everything)*
+### Phase 1 — Restore measurability ✅ *built*
 
 You cannot improve what scores 1.0. Before any new capability:
 
@@ -170,7 +193,32 @@ You cannot improve what scores 1.0. Before any new capability:
    does not run as documented.
 
 **Definition of done:** `conscience_score` on held-out data is well below 1.0
-and moves when you change `agent.py`.
+and moves when you change `agent.py`. — **met**, see §6.
+
+Delivered:
+
+| File | What |
+|---|---|
+| `heldout/bank.py` | 150 scenarios, action strings provably disjoint from `ACTION_NORM_MAP` and the oracle; `verify_disjoint()` fails the run if that stops being true |
+| `heldout/paraphrases.py` | 25 groups / 91 variants of the same acts reworded |
+| `heldout/adversarial.py` | 23 cases: conflict, licensing, pressure, escalation, injection, noise |
+| `heldout/evaluate.py` | harness; every L4/L5 case runs in `isolated_norms()` on a temp history file |
+| `evaluate_heldout.py` | runner (`--verbose`, `--compare`) |
+
+Three metric-design traps were found and closed while building it — worth
+knowing, because the baseline oracle still contains the first one:
+
+1. **"No violation" is not a judgment.** Scoring compliant scenarios purely on
+   `judge() is None` gives a system that understands nothing full marks on
+   every compliant case. Held-out L2 additionally requires the act to be
+   *recognised* (`classify_action == "compliant"`, not `"ambiguous"`).
+2. **Stability of a non-judgment is vacuous.** The pressure / injection / noise
+   cases first scored 1.0 — because base and variant both returned
+   `"ambiguous"`. They now run on actions the agent can already judge, and an
+   ambiguous baseline caps the case at partial credit.
+3. **Conflict order-dependence.** Each conflict vector is fed twice, in both
+   key orders, and both answers must agree *and* match the hierarchy. That
+   cannot be passed by `violated_domains[0]`.
 
 ### Phase 2 — Close the loop *(the actual conscience fix)*
 
@@ -246,7 +294,7 @@ To earn it:
   weigh the same as three minor accidental ones.
 - Make `detect_drift` measure real drift: compare current judgment behaviour on
   a fixed probe set against the same probes judged N episodes ago. Today it
-  returns `True` whenever history is sparse (`agent.py:605-606`), which scores
+  returns `True` whenever history is sparse (`agent.py:650-651`), which scores
   well and detects nothing.
 - Give cross-domain transfer a principled basis — the norm-adjacency structure
   in the priority orderings — rather than a flat 20%.
@@ -257,10 +305,11 @@ To earn it:
 
 | Order | Work | Effort | Why now |
 |---|---|---|---|
-| 1 | Fix `cryptography` crash | hours | Repo doesn't run as documented |
-| 2 | Held-out bank + paraphrase metric | 1–2 weeks | Nothing else is measurable until this exists |
-| 3 | Quarantine self-grading mode | hours | Protects every number you report |
-| 4 | `effective_threshold` + behavioural L4 test | days | The decisive conscience fix |
+| ~~1~~ | ~~Fix `cryptography` crash~~ | done | Repo now imports without it |
+| ~~2~~ | ~~Held-out bank + paraphrase metric~~ | done | `heldout/` |
+| ~~3~~ | ~~Quarantine self-grading mode~~ | done | `--self-grade-unsafe`, score suppressed |
+| **0** | **Guardrail severity bypass (§5.1)** | **hours** | **Exploitable in production today** |
+| 4 | `effective_threshold` + behavioural L4 test | days | The decisive conscience fix — 6 held-out cases waiting |
 | 5 | Feature-based domain inference | 1–2 weeks | Kills the lookup-table ceiling |
 | 6 | Load `normative_rules.csv` for conflicts | 1–2 weeks | Highest-value unused asset |
 | 7 | Switch parameters + hard floors | 3–4 weeks | Turns the v1.2 prompt into runtime |
@@ -286,7 +335,85 @@ surfaces (seeding, oracle overrides, scenario mutation).
 
 ---
 
-## 5. The honest framing
+## 5. What Phase 1 measured
+
+`python evaluate_heldout.py --compare`, 150 held-out scenarios:
+
+```
+layer1_nsm:           0.200000   norm coverage on unseen acts
+layer2_judge:         0.200000   self-judgment on unseen acts
+layer3_penalty:       1.000000   calibration + 12/12 ordering properties
+layer4_bum:           0.700000   binding — behavioural
+layer5_continuity:    0.700000   continuity — unseeded
+
+heldout_score:        0.560000   (fixed bank: 1.000000 — gap +0.440000)
+paraphrase_accuracy:  0.153846   14/91 variants
+adversarial_score:    0.695652
+```
+
+The 14 paraphrase variants scored correct are precisely the canonical
+`scenarios.py` wordings seeded into those groups. Every reworded variant of the
+same act fails. That is the clearest single statement of the problem: the
+system recognises strings, not acts.
+
+Read layer by layer, this is a precise map of what works:
+
+- **L3 = 1.000, all 12 ordering properties pass.** The penalty generator is the
+  one layer that is genuinely feature-based — it reads `context["severity"]`
+  and never touches the action string, so it generalises perfectly. The
+  ordering checks are direction-only, so this is not the fitted constants
+  passing their own exam; penalty really is monotonic in severity, intent,
+  repetition and stakes.
+- **L1 = L2 = 0.200 — the floor, exactly.** 0.20 is the partial credit for an
+  honest "ambiguous", and all 90 held-out L1+L2 scenarios landed on it. Not one
+  wrong answer, and not one right one — the signature of a lookup miss rather
+  than a reasoning error. Worth stating plainly: **the agent never judges a
+  novel act incorrectly, because it never judges a novel act at all.**
+- **L4 = 0.700 with all six decisive cases at 0.000.** The safety machinery
+  (clamping, ceilings, adversarial injection, isolation, never-loosens) passes
+  everything. The loop itself fails everywhere. Exactly the split §1.2 predicted.
+- **L5 = 0.700, and the six failures are one bug.** `weight_elevated`,
+  `weight_severity`, `weight_count` and both cross-domain cases fail because
+  `_synchronize_norms_from_history()` runs **only in `__init__`**. Episodes
+  recorded after construction never reach `domain_weights`, so within a live
+  session continuity is a log, not character — the Phase 5 hypothesis,
+  confirmed and localised.
+- **Norm conflict = 0.143.** Six of seven conflict cases fail; the one pass has
+  only a single norm above threshold, so it is not really a conflict. Answers
+  flip when the same score vector is supplied in a different key order.
+
+### 5.1 Live guardrail bypass — fix before any deployment
+
+The one finding that is not a measurement artifact. `_compute_severity` returns
+early on a caller-supplied key (`agent.py:305-306`):
+
+```python
+if "severity" in context:
+    return float(context["severity"])
+```
+
+`production_service.py:130` reads `context` straight from the request body and
+passes it to `judge_all` at line 145. So a client of `/v1/guardrail/decision`
+can attach `"severity": 0.0` to any request:
+
+```
+honest context:      (['harm'], 0.6)  -> violation
+severity:0.0 added:  ([],      0.0)   -> compliant
+```
+
+A maximum-severity harm request is returned as `allowed`. No authentication
+needed — it is a field in the JSON body, and `_classify_message` (line 344)
+lets an LLM populate the same dict. Caught by adversarial case `X19`.
+
+The fix is small: treat `context["severity"]` as an untrusted *hint* rather
+than an authoritative override — take `max(computed, hint)`, or accept it only
+from an internal caller flag that the HTTP layer cannot set. Layer 3's oracle
+scenarios pass severity in deliberately, so the parameter must keep working
+for trusted callers; it just must not be able to *lower* a computed severity.
+
+---
+
+## 6. The honest framing
 
 For the EU AI Act positioning in `README.md`: the Act's oversight and logging
 requirements exist to compensate for absent conscience. The argument that a
@@ -302,10 +429,19 @@ clear. It is mostly Phase 1 and Phase 2.
 
 ---
 
-## Reproducing the diagnostics
+## Reproducing everything
 
 ```bash
 cd conscience_research
+
+python evaluate_heldout.py --compare     # the metric that moves: 0.560 vs 1.000
+python evaluate_heldout.py --verbose     # per-case failures
+
 python diagnostics/probe_generalization.py   # held-out actions → 10/10 ambiguous
 python diagnostics/probe_binding_loop.py     # decisive test → verdict unchanged
+
+python agent.py                          # fixed bank — still 1.000000
 ```
+
+Phase 2 succeeds when `layer4_bum` rises above 0.700 **because the six
+`decisive` cases start passing** — not because anything else moved.
