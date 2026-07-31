@@ -1,6 +1,6 @@
 # Strategy — Engineering Neuromorality into Machines
 
-**Status:** Phases 1–3 complete, guardrail bypass closed. Phase 4 (hierarchy) next.
+**Status:** Phases 1–4 complete, guardrail bypass closed. Phase 5 (continuity) next.
 **Scope:** `conscience_research/` + the normative assets at repo root
 **Date:** 2026-07-29
 
@@ -30,16 +30,18 @@ the loop.
 **Phase 1 has now been built** (`heldout/`, `python evaluate_heldout.py`).
 The signal is back:
 
-| Metric | Fixed bank | P1 | P2 | P3 |
-|---|---|---|---|---|
-| composite | 1.000000 | 0.560000 | 0.620000 | **0.910583** |
-| layer1_nsm | 1.000000 | 0.200000 | 0.200000 | **0.940840** |
-| layer2_judge | 1.000000 | 0.200000 | 0.200000 | **0.912075** |
-| layer4_bum (binding) | 1.000000 | 0.700000 | **1.000000** | 1.000000 |
-| layer5_continuity | 1.000000 | 0.700000 | 0.700000 | 0.700000 |
-| paraphrase accuracy | — | 0.153846 | 0.153846 | **0.978022** |
-| norm-conflict (magnitude) | — | 0.142857 | 0.142857 | **1.000000** |
-| norm-conflict (hierarchy) | — | — | — | **0.250000** |
+| Metric | Fixed bank | P1 | P2 | P3 | P4 |
+|---|---|---|---|---|---|
+| composite | 1.000000 | 0.560000 | 0.620000 | 0.910583 | 0.908583 |
+| layer1_nsm | 1.000000 | 0.200000 | 0.200000 | 0.940840 | 0.930840 |
+| layer2_judge | 1.000000 | 0.200000 | 0.200000 | 0.912075 | 0.912075 |
+| layer4_bum (binding) | 1.000000 | 0.700000 | **1.000000** | 1.000000 | 1.000000 |
+| layer5_continuity | 1.000000 | 0.700000 | 0.700000 | 0.700000 | 0.700000 |
+| paraphrase accuracy | — | 0.153846 | 0.153846 | **0.978022** | 0.978022 |
+| adversarial | — | 0.695652 | 0.695652 | 0.866071 | **1.000000** |
+| norm-conflict (hierarchy) | — | — | — | 0.250000 | **1.000000** |
+| hard floors | — | — | — | — | **1.000000** |
+| fresh probe, domain | — | — | — | 0.882 | **0.941** |
 
 Phases 2 and 3 are built. §6 records Phase 2 (the loop), §7 records Phase 3
 (inference) — including an honest note on why the held-out bank is now closer
@@ -305,7 +307,7 @@ Retire `ACTION_NORM_MAP` as the primary path; keep it only as an override table.
   auditable moral runtime. Neural where judgment is genuinely fuzzy;
   symbolic where accountability is required.
 
-### Phase 4 — Wire in the normative substrate you already own
+### Phase 4 — Wire in the normative substrate you already own ✅ *built*
 
 This is the largest untapped asset and the cheapest large win.
 
@@ -354,9 +356,9 @@ To earn it:
 | ~~0~~ | ~~Guardrail severity bypass (§5.1)~~ | done | Closed; X19 passes, regression probe added |
 | ~~4~~ | ~~`effective_threshold` + behavioural L4 test~~ | done | Loop closed; 6/6 decisive cases pass |
 | ~~5~~ | ~~Feature-based domain inference~~ | done | L1/L2 off the floor; paraphrase 0.978 |
-| **6** | **Load `normative_rules.csv` for conflicts** | 1–2 weeks | Highest-value unused asset; 5 `hierarchy` cases waiting at 0.250 |
-| 7 | Switch parameters + hard floors | 3–4 weeks | Turns the v1.2 prompt into runtime |
-| 8 | Continuity rework | 2–3 weeks | Character, not logging |
+| ~~6~~ | ~~Load `normative_rules.csv` for conflicts~~ | done | hierarchy 0.250 → 1.000; hard floors executable |
+| ~~7~~ | ~~Switch parameters + hard floors~~ | done | SW1–SW9 resolve M1–M11; HF1–HF4 absolute |
+| **8** | **Continuity rework** | 2–3 weeks | Only layer still at 0.700; six failures, one bug |
 
 Items 1, 3 and 4 together are roughly a day of work and change what the project
 can honestly claim.
@@ -621,7 +623,101 @@ cases are all failing. On Phase 1's original 23 cases the score is 22/23 =
 
 ---
 
-## 8. The honest framing
+## 8. What Phase 4 changed
+
+```
+                      Phase 3     Phase 4
+norm-conflict (hier)  0.250000 →  1.000000    rule table beats magnitude
+hard floors                  — →  1.000000    HF1–HF4 executable
+adversarial_score     0.866071 →  1.000000
+fresh probe, domain      0.882 →     0.941    untuned — the honest read
+
+layer1_nsm            0.940840 →  0.930840    lexicon precision trade, below
+layer2_judge          0.912075 →  0.912075    unchanged
+heldout_score         0.910583 →  0.908583
+fixed bank            1.000000 →  1.000000    no regression
+third_eye             0.994140 →  0.994140    no regression
+```
+
+### 8.1 The design I published was wrong
+
+Phase 4 was described here as "make rank beat magnitude" — implement
+`Au → C → F → P → H → A → Hm` and let the higher-ranked norm win. Reading
+`normative_rules.csv` before building showed that framing does not survive
+contact with the data:
+
+- **4 hard floors**, `never_defensible: TRUE` — absolute
+- **10 stable** pairwise orderings, one of which (**S10: `C > F`**) *contradicts
+  the default rank*, since fairness is 3 and confidentiality is 2
+- **11 oscillating (M1–M11)** — **no fixed winner**. `M2 (P<->H)` resolves to
+  `H > P` when the act is public-by-act and `P > H` when the datum is
+  private-by-default
+
+A flat ranking cannot express an oscillating rule. It would have hard-coded one
+branch of each and silently discarded the other — passing its own tests while
+contradicting the repository's philosophy. The hierarchy line is labelled in
+`conscience_system_prompt.md` as "the DEFAULT ordering"; it is now used only as
+a last-resort tie-break, below the rule table and the switch parameters.
+
+### 8.2 Two of my own test cases were wrong
+
+`X05` asserted fairness governs confidentiality, reasoned from the default rank.
+`S10` states the opposite as a *stable* rule. `X28` asserted a fixed winner for
+the `P<->H` pair that `M2` marks oscillating. Both expectations were written
+before I read the rule table.
+
+Had they not been corrected, Phase 4 would have been graded against rules the
+repository does not hold — and "fixing" X05 would have taught the agent to
+violate S10. The oscillating cases now each carry the switch that decides them
+and are **paired with their opposite branch** (`X28`/`X29`, `X26`/`X30`,
+`X27`/`X31`), so the tests prove the switch actually switches rather than that
+a constant was hard-coded in the winning direction.
+
+### 8.3 Hard floors are now executable
+
+```
+HF1  NEVER Au > Hm      HF3  NEVER F  > Hm
+HF2  NEVER Au > H       HF4  NEVER C  > Hm
+```
+
+Checked before every other rule, exempt from switch parameters, unreachable by
+accumulated weight or operator configuration. `X37` verifies HF1 holds even
+when every switch present would favour authority.
+
+`diagnostics/probe_defensibility.py` is a **second oracle** built from
+`all_priority_orderings_with_rules.csv` — an asset never used for tuning. It
+takes each two-way ordering the philosophy annotates with a hard-floor risk,
+constructs the triggering conditions, stacks the scores 0.95/0.35 in favour of
+the forbidden winner, and requires the agent to refuse anyway. **4/4 respected.**
+That oracle cannot be saturated by adjusting constants, because it asks whether
+the orderings produced are ones the philosophy calls defensible.
+
+### 8.4 One honest trade
+
+`layer1_nsm` fell 0.941 → 0.931. Arbitration surfaced that `"record"` and
+`"data"` were too generic in the privacy lexicon: `i_deleted_records_without_approval`
+activated privacy at 0.52 beside authority at 0.90, and stable rule S4
+("privacy floors authority") then handed the weak artifact the verdict.
+
+Removing those two terms cost a little on the tuned bank and improved the
+**untuned** fresh probe from 0.882 to 0.941 on domain accuracy. Where the two
+measures disagree, the untuned one is the one to believe.
+
+An intermediate attempt — a parity guard suppressing the rule table when one
+norm scored far higher — was **reverted**: it fixed the artifact cases but broke
+the hierarchy cases, whose entire purpose is a wide score gap with the
+lower-scoring norm governing. It was the wrong discriminator, treating "weak
+evidence" and "genuinely outranked" as the same thing.
+
+Four multi-domain held-out cases remain misattributed. Two (`H1_28`, `H2_21`)
+predate Phase 4. The other two sit on pairs the table declines to order —
+`S2 (P-A)` and `S6 (H-C)` are marked co-supportive, meaning both norms are
+served at once and either attribution is defensible. Forcing those would be
+fitting to my expectations rather than to the philosophy.
+
+---
+
+## 9. The honest framing
 
 For the EU AI Act positioning in `README.md`: the Act's oversight and logging
 requirements exist to compensate for absent conscience. The argument that a
@@ -647,6 +743,7 @@ python evaluate_heldout.py --verbose     # per-case failures
 
 python diagnostics/probe_fresh_holdout.py     # clean generalisation: 29/30
 python diagnostics/probe_severity_injection.py  # guardrail bypass regression
+python diagnostics/probe_defensibility.py    # second oracle: 4/4 hard floors
 python diagnostics/probe_binding_loop.py     # decisive test → VERDICT CHANGED: YES
 python diagnostics/probe_generalization.py   # the original 10-action probe
 
@@ -656,7 +753,7 @@ python agent.py                          # fixed bank — still 1.000000
 `probe_binding_loop.py` exits 0 only when the verdict changes, so it works as a
 regression test: if a later change re-severs the loop, it fails in CI.
 
-Phase 4 succeeds when the five `hierarchy` cases rise from 0.250 to 1.000 —
-i.e. when rank beats magnitude — **and** `conflict` stays at 1.000. Watch that
-`layer1_nsm` / `layer2_judge` do not fall: arbitration changes which norm is
-reported as primary, which is exactly what those layers score.
+Phase 5 succeeds when `layer5_continuity` leaves 0.700 — specifically when
+`weight_elevated`, `weight_severity`, `weight_count` and the two cross-domain
+cases pass, i.e. when episodes recorded *during* a session reach
+`domain_weights` rather than only those present at construction.

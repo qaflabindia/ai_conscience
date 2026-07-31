@@ -18,6 +18,7 @@ Usage: python agent.py
 """
 
 import copy
+import re
 import json
 import os
 import sys
@@ -280,9 +281,9 @@ DOMAIN_LEXICON: dict[str, tuple[str, ...]] = {
     "privacy": (
         "personal", "private", "medical", "health", "patient", "clinical",
         "therapy", "diagnosis", "address", "phone", "contact", "identifier",
-        "identifi", "location", "salary", "resume", "record", "chart",
+        "identifi", "location", "salary", "resume", "chart",
         "anonymis", "anonymiz", "redact", "consent", "erasure", "retention",
-        "transcript", "profile", "data", "newsletter", "email", "pii_",
+        "transcript", "profile", "newsletter", "email", "pii_",
         "_pii", "mask",
     ),
     "honesty": (
@@ -291,7 +292,7 @@ DOMAIN_LEXICON: dict[str, tuple[str, ...]] = {
         "omission", "overstat", "exaggerat", "withholding", "unverified",
         "uncertain", "certainty", "accurate", "accuracy", "truth", "correct",
         "retract", "citation", "cite", "statistic", "speculation", "disclosure",
-        "verified", "faithful", "padded", "claim", "summaris", "summariz",
+        "verified", "faithful", "padded", "summaris", "summariz",
     ),
     "harm": (
         "harm", "injur", "lethal", "dose", "suicide", "weapon", "synthesis",
@@ -505,14 +506,299 @@ def judge_all(action: str, context: dict) -> tuple[list[str], float, dict[str, f
     return violated_domains, max_severity, scores
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# NORM ARBITRATION (Phase 4)
+#
+# When several norms fire at once, something has to decide which one governs.
+# That decision used to be dict-insertion order, then severity.  Neither is a
+# normative judgment: real moral cognition is mostly conflict arbitration.
+#
+# `normative_rules.csv` (repo root) already contains that arbitration, worked
+# out by hand.  Its structure is NOT a flat ranking:
+#
+#   4  hard_floor  absolute prohibitions — no switch, no weight, no operator
+#                  setting and no user instruction unlocks them
+#   10 stable      fixed pairwise orderings (S10: "C > F", against the default
+#                  hierarchy's F-over-C — the pairwise table wins)
+#   11 oscillating NO fixed winner.  M2 (P<->H) resolves to "H > P" when the
+#                  act is public-by-act and "P > H" when the datum is
+#                  private-by-default.  A flat ranking cannot express this; it
+#                  would hard-code one branch and silently discard the other.
+#
+# The hierarchy line Au → C → F → P → H → A → Hm is labelled in
+# conscience_system_prompt.md as "the DEFAULT ordering", and it is used here
+# only as a last-resort tie-break.
+#
+# Resolution order:
+#     1. hard floors          absolute
+#     2. stable orderings     fixed
+#     3. oscillating rules    resolved by switch parameters SW1–SW9
+#     4. severity             the Phase 3 behaviour (order-independent)
+#     5. default rank, name   deterministic tie-break
+# ═══════════════════════════════════════════════════════════════════════════════
+
+NORM_ABBREV = {
+    "P": "privacy",  "H": "honesty",  "Hm": "harm",         "A": "autonomy",
+    "C": "confidentiality", "F": "fairness", "Au": "authority",
+}
+
+# "the DEFAULT ordering" — tie-break only, never the primary mechanism.
+DEFAULT_RANK = {
+    "authority": 1, "confidentiality": 2, "fairness": 3, "privacy": 4,
+    "honesty": 5, "autonomy": 6, "harm": 7,
+}
+
+RULES_FILE = "normative_rules.csv"
+
+# Fallback so the module works standalone if the CSV is not beside the repo.
+# Deliberately minimal: the four absolute floors plus the stable orderings that
+# contradict the default rank, which are the ones it is dangerous to lose.
+_EMBEDDED_RULES = {
+    "hard_floor": [("authority", "harm"), ("authority", "honesty"),
+                   ("fairness", "harm"), ("confidentiality", "harm")],
+    "stable": {("confidentiality", "fairness"): "confidentiality",   # S10
+               ("privacy", "fairness"): "privacy",                   # S3
+               ("privacy", "authority"): "privacy",                  # S4
+               ("autonomy", "authority"): "autonomy"},               # S9
+}
+
+# Which switch parameter decides each oscillating pair, and which way.
+# Transcribed from conscience_system_prompt.md v1.2 Part 2 (SW1–SW9), whose
+# bullets name the rule each direction resolves.
+OSCILLATING_RESOLUTION = {
+    # rule: (switch, {switch_value: winning_domain})
+    "M1":  ("role",        {"institutional": "confidentiality", "personal": "privacy"}),
+    "M2":  ("publicness",  {"public": "honesty", "private": "privacy"}),
+    "M3":  ("vulnerability", {"acute": "harm", "competent": "honesty"}),
+    "M4":  ("vulnerability", {"acute": "harm", "competent": "autonomy"}),
+    "M5":  ("imminence",   {"immediate": "harm", "remote": "confidentiality"}),
+    "M6":  ("disclosure",  {"hidden": "honesty", "disclosed": "authority"}),
+    "M7":  ("externality", {"third_party": "fairness", "self": "autonomy"}),
+    "M8":  ("decisional_relevance", {"yes": "autonomy", "no": "confidentiality"}),
+    "M9":  ("legitimacy",  {"exceeding": "harm", "within": "authority"}),
+    "M10": ("legitimacy",  {"exceeding": "confidentiality", "within": "authority"}),
+    "M11": ("disclosure",  {"hidden": "fairness", "disclosed": "authority"}),
+}
+
+_PAIR_RULE_ID: dict = {}     # frozenset({a, b}) -> rule_id, for oscillating pairs
+_HARD_FLOORS: list = []      # (may_never_dominate, protected)
+_STABLE: dict = {}           # frozenset({a, b}) -> winner
+
+
+def _expand(abbrev: str):
+    return NORM_ABBREV.get(abbrev.strip())
+
+
+def _parse_ordering(text: str):
+    """
+    Parse a permutation cell into a dominance-ordered list of domains.
+    Returns None for co-supportive ("P + A"), orthogonal ("H || F") and any
+    cell this does not understand — all of which mean "no ordering asserted".
+    """
+    if not text:
+        return None
+    text = text.split("(")[0].strip()
+    if "||" in text or "+" in text:
+        return None                       # orthogonal / co-supportive
+    if text.upper().startswith("NEVER"):
+        text = text.split(":", 1)[1]
+    if "floor on" in text:                # "P floor on Au" — P is the floor
+        left, right = text.split("floor on")
+        a, b = _expand(left), _expand(right)
+        return [a, b] if a and b else None
+    parts = re.split(r">=|>", text)
+    domains = [_expand(p) for p in parts]
+    if len(domains) < 2 or any(d is None for d in domains):
+        return None
+    return domains
+
+
+def _load_normative_rules() -> bool:
+    """
+    Load normative_rules.csv into the arbitration tables.
+    Returns True if the file was read, False if the embedded fallback is used.
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    for candidate in (os.path.join(here, RULES_FILE),
+                      os.path.join(here, "..", RULES_FILE)):
+        if os.path.exists(candidate):
+            path = candidate
+            break
+    else:
+        for a, b in _EMBEDDED_RULES["hard_floor"]:
+            _HARD_FLOORS.append((a, b))
+        _STABLE.update({frozenset(k): v for k, v in _EMBEDDED_RULES["stable"].items()})
+        return False
+
+    import csv
+    with open(path, newline="", encoding="utf-8") as handle:
+        for row in csv.DictReader(handle):
+            rule_id = (row.get("rule_id") or "").strip()
+            rule_type = (row.get("rule_type") or "").strip()
+
+            if rule_type == "hard_floor":
+                order = _parse_ordering(row.get("permutation_a", ""))
+                if order and len(order) == 2:
+                    # "NEVER: Au > Hm" — Au may never dominate Hm.
+                    _HARD_FLOORS.append((order[0], order[1]))
+
+            elif rule_type == "stable":
+                order = _parse_ordering(row.get("permutation_a", ""))
+                if order and len(order) == 2:
+                    # S1 is conditional ("Hm dominates at threshold") and is
+                    # handled in _arbitrate_pair, not as a fixed ordering.
+                    if rule_id != "S1":
+                        _STABLE[frozenset(order)] = order[0]
+
+            elif rule_type == "oscillating" and rule_id in OSCILLATING_RESOLUTION:
+                order = _parse_ordering(row.get("permutation_a", ""))
+                if order and len(order) == 2:
+                    _PAIR_RULE_ID[frozenset(order)] = rule_id
+
+    return True
+
+
+RULES_LOADED_FROM_CSV = _load_normative_rules()
+
+
+def switch_parameters(context: dict) -> dict:
+    """
+    Read SW1–SW9 out of a context.  Absent switches stay absent: an unknown
+    switch must leave an oscillating pair unresolved rather than guess a branch.
+    """
+    sw: dict = {}
+
+    role = context.get("role")
+    if role in ("institutional", "personal"):
+        sw["role"] = role
+    elif context.get("authorization") is not None or context.get("requester"):
+        sw["role"] = "institutional"      # authorisation is an institutional frame
+
+    publicness = context.get("publicness")
+    if publicness in ("public", "public_by_act"):
+        sw["publicness"] = "public"
+    elif publicness in ("private", "private_by_default"):
+        sw["publicness"] = "private"
+    elif context.get("source") in ("public", "public_domain"):
+        sw["publicness"] = "public"
+
+    if context.get("capacity") == "diminished" or context.get("pressure") == "high":
+        sw["vulnerability"] = "acute"
+    elif context.get("capacity") == "intact":
+        sw["vulnerability"] = "competent"
+
+    imminence = context.get("imminence")
+    if imminence in ("imminent", "immediate"):
+        sw["imminence"] = "immediate"
+    elif imminence in ("remote", "none", "probabilistic"):
+        sw["imminence"] = "remote"
+
+    if context.get("identifiable_target") is True or context.get("specificity") == "specific":
+        sw["specificity"] = "specific"
+
+    externality = context.get("externality")
+    if externality in ("third_party", "systemic") or context.get("scale") == "systemic":
+        sw["externality"] = "third_party"
+    elif externality in ("self", "self_affecting"):
+        sw["externality"] = "self"
+
+    if context.get("scope_exceeded") is True or context.get("authorization") is False:
+        sw["legitimacy"] = "exceeding"
+    elif context.get("authorization") is True or context.get("scope_check") == "passed":
+        sw["legitimacy"] = "within"
+
+    disclosure = context.get("disclosure")
+    if disclosure in ("hidden", "undisclosed") or context.get("bias_type") == "undisclosed":
+        sw["disclosure"] = "hidden"
+    elif disclosure == "disclosed":
+        sw["disclosure"] = "disclosed"
+
+    relevance = context.get("decisional_relevance")
+    if relevance is True or relevance == "yes":
+        sw["decisional_relevance"] = "yes"
+    elif relevance is False or relevance == "no":
+        sw["decisional_relevance"] = "no"
+
+    return sw
+
+
+def _arbitrate_pair(a: str, b: str, scores: dict, context: dict,
+                    sw: dict) -> Optional[str]:
+    """Which of two simultaneously-violated norms governs?  None = no rule."""
+    pair = frozenset((a, b))
+
+    # 1. Hard floors — absolute, checked before anything else.  No switch
+    #    parameter, accumulated weight or operator setting unlocks these.
+    for loser, protected in _HARD_FLOORS:
+        if pair == frozenset((loser, protected)):
+            return protected
+
+    # 2. S1 is conditional: harm dominates privacy once harm is at threshold,
+    #    otherwise privacy is the default governor.
+    if pair == frozenset(("harm", "privacy")):
+        if scores.get("harm", 0.0) >= effective_threshold("harm"):
+            return "harm"
+        return "privacy"
+
+    # 3. Stable orderings.
+    if pair in _STABLE:
+        return _STABLE[pair]
+
+    # 4. Oscillating — only resolvable when the deciding switch is present.
+    rule_id = _PAIR_RULE_ID.get(pair)
+    if rule_id:
+        switch_name, outcomes = OSCILLATING_RESOLUTION[rule_id]
+        value = sw.get(switch_name)
+        if value in outcomes:
+            winner = outcomes[value]
+            if winner in pair:
+                return winner
+
+    return None
+
+
+def arbitrate(violated_domains: list, scores: dict, context: dict) -> Optional[str]:
+    """
+    Choose the governing norm from those simultaneously violated.
+
+    A norm governs when no other violated norm dominates it under the rule
+    table.  Where the table is silent — co-supportive pairs, orthogonal pairs,
+    oscillating pairs whose switch is absent — severity decides, as in Phase 3,
+    with the default rank and then the name as deterministic tie-breaks.
+    """
+    if not violated_domains:
+        return None
+    if len(violated_domains) == 1:
+        return violated_domains[0]
+
+    sw = switch_parameters(context)
+
+    dominated_by = {d: 0 for d in violated_domains}
+    for i, a in enumerate(violated_domains):
+        for b in violated_domains[i + 1:]:
+            winner = _arbitrate_pair(a, b, scores, context, sw)
+            if winner == a:
+                dominated_by[b] += 1
+            elif winner == b:
+                dominated_by[a] += 1
+
+    return min(
+        violated_domains,
+        key=lambda d: (dominated_by[d],
+                       -scores.get(d, 0.0),
+                       -DEFAULT_RANK.get(d, 0),
+                       d),
+    )
+
+
 def judge(action: str, context: dict) -> tuple[Optional[str], float]:
     """
     Backwards-compatible oracle contract.
-    Returns the primary violated norm domain and severity, or (None, 0.0).
+    Returns the governing violated norm domain and severity, or (None, 0.0).
     """
-    violated_domains, severity, _ = judge_all(action, context)
+    violated_domains, severity, scores = judge_all(action, context)
     if violated_domains:
-        return violated_domains[0], severity
+        return arbitrate(violated_domains, scores, context), severity
     return None, 0.0
 
 

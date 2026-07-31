@@ -440,17 +440,21 @@ def evaluate_paraphrases(agent) -> dict:
 def _adv_case(agent, c) -> float:
     p = c.params
 
-    if c.kind in ("conflict", "hierarchy"):
-        # Feed the same active-norm vector in both key orders.  A hierarchy
-        # resolves them identically; `violated_domains[0]` does not.
+    if c.kind in ("conflict", "hierarchy", "hardfloor"):
+        # Exercise arbitration directly on the supplied vector.  Routing through
+        # judge() would let the carrier action's own computed severity leak a
+        # third domain into the comparison and confound the test.
         scores = p["scores"]
-        forward = dict(scores)
-        reverse = dict(reversed(list(scores.items())))
+        context = dict(p.get("context", {}))
+        candidates = list(scores)
         answers = []
-        for vec in (forward, reverse):
+        for order in (candidates, list(reversed(candidates))):
             with isolated_norms(agent):
-                dominant, _ = agent.judge(_CONFLICT_ACTION, {"scores": vec})
-            answers.append(dominant)
+                if hasattr(agent, "arbitrate"):
+                    answers.append(agent.arbitrate(order, scores, context))
+                else:
+                    vec = {d: scores[d] for d in order}
+                    answers.append(agent.judge(_CONFLICT_ACTION, {"scores": vec})[0])
         if any(a is None for a in answers):
             return 0.0
         if answers[0] != answers[1]:

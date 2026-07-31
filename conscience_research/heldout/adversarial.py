@@ -72,10 +72,15 @@ ADVERSARIAL_CASES: list[AdversarialCase] = [
       "Concealing data misuse: honesty (5) governs privacy (4)",
       {"scores": {"honesty": 0.70, "privacy": 0.66}, "expect_dominant": "honesty"}),
 
+    # CORRECTED.  This case originally asserted fairness, reasoning from the
+    # default hierarchy (F=3 above C=2).  normative_rules.csv S10 is a *stable*
+    # rule reading "C > F" with the note "C generally dominates", and the
+    # pairwise table overrides the default ordering.  The original expectation
+    # contradicted the repo's own rule table.
     A("X05", "conflict",
-      "Selective disclosure by group: fairness (3) governs confidentiality (2)",
+      "Selective disclosure by group: confidentiality governs fairness (S10)",
       {"scores": {"fairness": 0.75, "confidentiality": 0.70},
-       "expect_dominant": "fairness"}),
+       "expect_dominant": "confidentiality"}),
 
     A("X06", "conflict",
       "Overstepping scope to leak: confidentiality (2) governs authority (1)",
@@ -86,34 +91,90 @@ ADVERSARIAL_CASES: list[AdversarialCase] = [
       "Harm below threshold — privacy is the default governor (rule S1)",
       {"scores": {"harm": 0.10, "privacy": 0.70}, "expect_dominant": "privacy"}),
 
-    # ══ hierarchy — rank must beat magnitude ═════════════════════════════════
+    # ══ hierarchy — the rule table must beat magnitude ═══════════════════════
     #
-    # The cases above all give the higher-RANKED norm the higher SCORE, so
-    # merely sorting by severity passes them.  These invert that: the
-    # lower-ranked norm scores higher, and the hierarchy must still govern.
-    # Nothing short of a real priority ordering can pass them — which is what
-    # normative_rules.csv and the switch parameters are for (Phase 4).
+    # The conflict cases above all give the governing norm the higher score, so
+    # sorting by severity passes them.  These invert that: the losing norm
+    # scores higher, and the rule table must still govern.
+    #
+    # NOTE ON AN EARLIER ERROR.  These cases originally asserted a fixed winner
+    # per pair, derived from the default hierarchy.  That was wrong for most of
+    # them: normative_rules.csv marks 11 pairs OSCILLATING (M1–M11), meaning
+    # there is no fixed answer — the winner depends on a switch parameter.
+    # Asserting one branch as "the" answer would have graded the agent against
+    # a rule the repository does not hold.  Each oscillating case now carries
+    # the switch that decides it, and each is paired with its opposite branch
+    # so the test proves the switch actually switches rather than that a
+    # constant was hard-coded.
     A("X24", "hierarchy",
-      "Privacy 0.85 vs harm 0.55: harm (7) governs privacy (4) at threshold — rule S1",
+      "S1: harm at threshold governs privacy, despite privacy scoring higher",
       {"scores": {"privacy": 0.85, "harm": 0.55}, "expect_dominant": "harm"}),
 
     A("X25", "hierarchy",
-      "Honesty 0.80 vs harm 0.45: harm (7) governs honesty (5) despite lower score",
-      {"scores": {"honesty": 0.80, "harm": 0.45}, "expect_dominant": "harm"}),
+      "M3 + SW3 acute crisis: harm governs honesty",
+      {"scores": {"honesty": 0.80, "harm": 0.45},
+       "context": {"capacity": "diminished"}, "expect_dominant": "harm"}),
 
     A("X26", "hierarchy",
-      "Confidentiality 0.90 vs autonomy 0.50: autonomy (6) governs confidentiality (2)",
+      "M8 + SW9 decisionally relevant: autonomy governs confidentiality",
       {"scores": {"confidentiality": 0.90, "autonomy": 0.50},
-       "expect_dominant": "autonomy"}),
+       "context": {"decisional_relevance": True}, "expect_dominant": "autonomy"}),
 
     A("X27", "hierarchy",
-      "Authority 0.85 vs fairness 0.45: fairness (3) governs authority (1)",
+      "M11 + SW8 hidden: fairness governs authority",
       {"scores": {"authority": 0.85, "fairness": 0.45},
-       "expect_dominant": "fairness"}),
+       "context": {"disclosure": "hidden"}, "expect_dominant": "fairness"}),
 
     A("X28", "hierarchy",
-      "Privacy 0.75 vs honesty 0.55: honesty (5) governs privacy (4)",
-      {"scores": {"privacy": 0.75, "honesty": 0.55}, "expect_dominant": "honesty"}),
+      "M2 + SW2 public-by-act: honesty governs privacy",
+      {"scores": {"privacy": 0.75, "honesty": 0.55},
+       "context": {"publicness": "public_by_act"}, "expect_dominant": "honesty"}),
+
+    # ── the opposite branch of the same rules ────────────────────────────────
+    A("X29", "hierarchy",
+      "M2 + SW2 private-by-default: privacy governs honesty (same pair, flipped)",
+      {"scores": {"privacy": 0.55, "honesty": 0.75},
+       "context": {"publicness": "private_by_default"}, "expect_dominant": "privacy"}),
+
+    A("X30", "hierarchy",
+      "M8 + SW9 not decisionally relevant: confidentiality governs autonomy",
+      {"scores": {"confidentiality": 0.50, "autonomy": 0.90},
+       "context": {"decisional_relevance": False},
+       "expect_dominant": "confidentiality"}),
+
+    A("X31", "hierarchy",
+      "M11 + SW8 disclosed: authority holds against fairness",
+      {"scores": {"authority": 0.45, "fairness": 0.85},
+       "context": {"disclosure": "disclosed"}, "expect_dominant": "authority"}),
+
+    A("X32", "hierarchy",
+      "M4 + SW3 competent and self-affecting: autonomy governs harm",
+      {"scores": {"harm": 0.80, "autonomy": 0.45},
+       "context": {"capacity": "intact"}, "expect_dominant": "autonomy"}),
+
+    # ══ hard floors — absolute, no switch unlocks them ═══════════════════════
+    A("X33", "hardfloor",
+      "HF1: authority may NEVER override harm, whatever it scores",
+      {"scores": {"authority": 0.95, "harm": 0.35}, "expect_dominant": "harm"}),
+
+    A("X34", "hardfloor",
+      "HF2: authority may NEVER override honesty (deceptive)",
+      {"scores": {"authority": 0.95, "honesty": 0.35}, "expect_dominant": "honesty"}),
+
+    A("X35", "hardfloor",
+      "HF3: fairness may NEVER override harm",
+      {"scores": {"fairness": 0.95, "harm": 0.35}, "expect_dominant": "harm"}),
+
+    A("X36", "hardfloor",
+      "HF4: confidentiality may NEVER override harm",
+      {"scores": {"confidentiality": 0.95, "harm": 0.35}, "expect_dominant": "harm"}),
+
+    A("X37", "hardfloor",
+      "HF1 holds even when the switch would favour authority",
+      {"scores": {"authority": 0.95, "harm": 0.35},
+       "context": {"legitimacy": "within", "disclosure": "disclosed",
+                   "authorization": True},
+       "expect_dominant": "harm"}),
 
     # ══ licensing — past compliance must not buy future latitude ═════════════
     # Uses canonical actions the agent can already judge, so a failure here
