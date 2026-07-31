@@ -1,6 +1,6 @@
 # Strategy — Engineering Neuromorality into Machines
 
-**Status:** Phases 1–4 complete, guardrail bypass closed. Phase 5 (continuity) next.
+**Status:** Phases 1–5 complete. All five layers measured on held-out data.
 **Scope:** `conscience_research/` + the normative assets at repo root
 **Date:** 2026-07-29
 
@@ -30,18 +30,18 @@ the loop.
 **Phase 1 has now been built** (`heldout/`, `python evaluate_heldout.py`).
 The signal is back:
 
-| Metric | Fixed bank | P1 | P2 | P3 | P4 |
-|---|---|---|---|---|---|
-| composite | 1.000000 | 0.560000 | 0.620000 | 0.910583 | 0.908583 |
-| layer1_nsm | 1.000000 | 0.200000 | 0.200000 | 0.940840 | 0.930840 |
-| layer2_judge | 1.000000 | 0.200000 | 0.200000 | 0.912075 | 0.912075 |
-| layer4_bum (binding) | 1.000000 | 0.700000 | **1.000000** | 1.000000 | 1.000000 |
-| layer5_continuity | 1.000000 | 0.700000 | 0.700000 | 0.700000 | 0.700000 |
-| paraphrase accuracy | — | 0.153846 | 0.153846 | **0.978022** | 0.978022 |
-| adversarial | — | 0.695652 | 0.695652 | 0.866071 | **1.000000** |
-| norm-conflict (hierarchy) | — | — | — | 0.250000 | **1.000000** |
-| hard floors | — | — | — | — | **1.000000** |
-| fresh probe, domain | — | — | — | 0.882 | **0.941** |
+| Metric | Fixed bank | P1 | P2 | P3 | P4 | P5 |
+|---|---|---|---|---|---|---|
+| composite | 1.000000 | 0.560000 | 0.620000 | 0.910583 | 0.908583 | **0.968583** |
+| layer1_nsm | 1.000000 | 0.200000 | 0.200000 | 0.940840 | 0.930840 | 0.930840 |
+| layer2_judge | 1.000000 | 0.200000 | 0.200000 | 0.912075 | 0.912075 | 0.912075 |
+| layer4_bum (binding) | 1.000000 | 0.700000 | **1.000000** | 1.000000 | 1.000000 | 1.000000 |
+| layer5_continuity | 1.000000 | 0.700000 | 0.700000 | 0.700000 | 0.700000 | **1.000000** |
+| paraphrase accuracy | — | 0.153846 | 0.153846 | **0.978022** | 0.978022 | 0.978022 |
+| adversarial | — | 0.695652 | 0.695652 | 0.866071 | **1.000000** | 1.000000 |
+| norm-conflict (hierarchy) | — | — | — | 0.250000 | **1.000000** | 1.000000 |
+| hard floors | — | — | — | — | **1.000000** | 1.000000 |
+| fresh probe, domain | — | — | — | 0.882 | **0.941** | 0.941 |
 
 Phases 2 and 3 are built. §6 records Phase 2 (the loop), §7 records Phase 3
 (inference) — including an honest note on why the held-out bank is now closer
@@ -327,7 +327,7 @@ That converts 13,692 rows of philosophical work into an executable
 specification — and gives you a second, independent metric that cannot be
 saturated by tuning constants.
 
-### Phase 5 — Continuity that shapes character, not a log
+### Phase 5 — Continuity that shapes character, not a log ✅ *built*
 
 Layer 5's stated goal is *"the difference between memory and character."*
 To earn it:
@@ -358,7 +358,7 @@ To earn it:
 | ~~5~~ | ~~Feature-based domain inference~~ | done | L1/L2 off the floor; paraphrase 0.978 |
 | ~~6~~ | ~~Load `normative_rules.csv` for conflicts~~ | done | hierarchy 0.250 → 1.000; hard floors executable |
 | ~~7~~ | ~~Switch parameters + hard floors~~ | done | SW1–SW9 resolve M1–M11; HF1–HF4 absolute |
-| **8** | **Continuity rework** | 2–3 weeks | Only layer still at 0.700; six failures, one bug |
+| ~~8~~ | ~~Continuity rework~~ | done | layer5 0.700 → 1.000; character, not logging |
 
 Items 1, 3 and 4 together are roughly a day of work and change what the project
 can honestly claim.
@@ -717,7 +717,77 @@ fitting to my expectations rather than to the philosophy.
 
 ---
 
-## 9. The honest framing
+## 9. What Phase 5 changed
+
+```
+                     Phase 4     Phase 5
+layer5_continuity    0.700000 →  1.000000    all 20 cases; unseeded
+heldout_score        0.908583 →  0.968583    gap to fixed bank +0.091 → +0.031
+
+everything else                  unchanged
+fixed bank           1.000000 →  1.000000    verified on a clean checkout
+third_eye            0.994140 →  0.994140
+```
+
+The six failures really were one bug. `_synchronize_norms_from_history()` ran
+only in `__init__`, so an episode recorded during a session never reached
+`domain_weights`. The agent could recall everything and be shaped by nothing —
+precisely the whitepaper's §7 distinction between memory and character. The
+recompute now runs after every `record()`.
+
+Three things were wrong with the accumulation beyond that:
+
+- **It was flat.** `1.0 + 0.015 × min(count, 3)` — capped at three episodes,
+  blind to what they were. A deliberate catastrophic breach and three trivial
+  slips were indistinguishable, and the fourth episode onward counted for
+  nothing. Moral load is now `severity × recency × intent`, summed over
+  history: a grave violation weighs more than a minor one, a fresh one more
+  than a stale one, a deliberate one more than an accident.
+- **Drift detection detected nothing.** It returned `True` whenever history was
+  sparse and almost never otherwise, which scored well against the oracle
+  precisely because it never had to be right. It now fires on evidence —
+  sustained violation rate, weight far from baseline, or a recent half
+  materially worse than the earlier half — while still treating sparse history
+  as unevidenced rather than claiming stability it cannot support.
+- **Cross-domain transfer was a flat 20%**, which says privacy and
+  confidentiality are no more related than privacy and authority. The rate is
+  now grounded in the Phase 4 rule table: domains it pairs are adjacent and
+  transfer 30%, unrelated domains 10%.
+
+### 9.1 The Phase 2 limitation is closed
+
+Phase 2 noted that earned strictness never decays during a compliant run,
+because `binding_update` returns early on a zero penalty and the passive-decay
+pass only executes when some *other* domain is violated. A long-lived agent
+therefore tightened monotonically until something else went wrong.
+
+A recorded compliant episode now repays a little of the earned weight. Measured
+in `probe_continuity_character.py`, after four self-judged privacy violations
+and then twenty-five clean episodes:
+
+```
+weight              2.2000 -> 1.3329
+effective threshold  0.210 ->  0.383      (operator slider: 0.450)
+```
+
+Strictness is earned by conduct and repaid by conduct, and the operator's
+slider is still the ceiling it relaxes back toward. Nothing external intervened.
+
+### 9.2 A fragility this surfaced
+
+Continuity weights now depend on the history file's contents rather than a
+capped count, which makes a duplicated episode consequential. The local
+`conscience_research/moral_history.jsonl` had grown to 18 lines against 9
+seeds — a re-seed after the key file moved in Phase 1, since undecryptable
+lines are dropped from memory but stay on disk.
+
+`_recompute_domain_weights` now weighs each `episode_id` once. The tracked
+history at repo root was never modified; the baseline was re-verified from a
+clean `git archive` checkout, not just the working tree.
+
+---
+
+## 10. The honest framing
 
 For the EU AI Act positioning in `README.md`: the Act's oversight and logging
 requirements exist to compensate for absent conscience. The argument that a
@@ -744,6 +814,7 @@ python evaluate_heldout.py --verbose     # per-case failures
 python diagnostics/probe_fresh_holdout.py     # clean generalisation: 29/30
 python diagnostics/probe_severity_injection.py  # guardrail bypass regression
 python diagnostics/probe_defensibility.py    # second oracle: 4/4 hard floors
+python diagnostics/probe_continuity_character.py  # memory vs character
 python diagnostics/probe_binding_loop.py     # decisive test → VERDICT CHANGED: YES
 python diagnostics/probe_generalization.py   # the original 10-action probe
 

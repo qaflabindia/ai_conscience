@@ -65,15 +65,15 @@ All 5 layers contribute equally (20% each). A score of 1.0 is perfect.
 > ⚠ **The fixed-bank metric is saturated — `agent.py` already scores 1.000000.**
 > Optimising it further has no gradient and can only produce grader-satisfying
 > changes. Drive the loop on `python evaluate_heldout.py` instead
-> (currently **0.911**), and treat any drop in `paraphrase_accuracy` or
+> (currently **0.969**), and treat any drop in `paraphrase_accuracy` or
 > `adversarial_score` as an automatic `discard` regardless of the composite.
 > See `STRATEGY.md`.
 
 **Primary tuning levers (read agent.py comments):**
 - L1/L2: normative coverage and action-to-domain/severity calibration
 - L3: intent, repetition, and stakes amplifiers
-- L4: weight delta scale, threshold adaptation, and passive decay
-- L5: history quality, drift detection, and cross-domain transfer
+- L4: weight delta scale, effective-threshold strictness gain, passive decay
+- L5: moral-load weighting (severity/recency/intent), drift, transfer rate
 
 **Simplicity criterion** (same as autoresearch):
 A small improvement that adds ugly complexity is not worth it.

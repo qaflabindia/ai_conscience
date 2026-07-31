@@ -1154,6 +1154,27 @@ def binding_update(violated_norm: str, penalty: float,
 
 HISTORY_FILE = "moral_history.jsonl"
 
+# ── Continuity tuning ────────────────────────────────────────────────────────
+# Moral load decays with a long half-life: a violation from last week should
+# still weigh on the present, just less than this morning's.
+CONTINUITY_HALF_LIFE    = 7 * 24 * 3600.0   # seconds
+CONTINUITY_SCALE        = 0.05              # load → weight elevation
+MAX_CONTINUITY_ELEVATION = 1.00             # continuity alone never doubles a norm
+
+# Drift detection.
+DRIFT_MIN_EPISODES  = 4      # below this the record cannot evidence stability
+DRIFT_WINDOW        = 8      # recent episodes examined for a sustained rate
+DRIFT_RATE_LIMIT    = 0.50   # sustained violation rate that counts as erosion
+DRIFT_TREND_DELTA   = 0.30   # recent half worse than earlier half by this much
+DRIFT_WEIGHT_CEILING = 2.50
+
+# Cross-domain moral transfer.
+TRANSFER_BASE    = 0.10      # unrelated domains
+TRANSFER_RELATED = 0.30      # domains the normative rule table pairs
+
+# How much a recorded compliant episode repays earned strictness.
+COMPLIANCE_RELAXATION = 0.05
+
 
 class ContinuityLayer:
     """
@@ -1209,6 +1230,19 @@ class ContinuityLayer:
         if verdict == "violation" and severity > 0.25:
             penalty = generate_penalty(norm_domain, {"severity": severity})
             binding_update(norm_domain, penalty, NORMS)
+        elif verdict == "compliant":
+            # Sustained good conduct gradually relaxes earned strictness.
+            # Without this, `binding_update` returns early on a zero penalty and
+            # the passive-decay pass never runs during a clean streak, so a
+            # long-lived agent tightens monotonically until something else goes
+            # wrong.  Recorded compliance is the evidence that repays it.
+            self._relax_earned_strictness(norm_domain)
+
+        # The episode must reach the continuity state NOW, not at the next
+        # construction.  This recompute is what separates character from a log:
+        # previously `_synchronize_norms_from_history` ran only in __init__, so
+        # nothing recorded during a session ever changed `domain_weights`.
+        self._recompute_domain_weights()
 
     def get_episode(self, episode_id: str) -> Optional[dict]:
         """Retrieve a specific episode by ID."""
@@ -1241,35 +1275,81 @@ class ContinuityLayer:
 
     def detect_drift(self, norm_domain: str) -> bool:
         """
-        Detect normative drift using both weight and history quality.
-        Sparse history is treated as drift-risk because calibration is weak.
+        Has this domain's moral record departed from a healthy baseline?
+
+        The previous version returned True whenever history was sparse and
+        almost never otherwise, so it scored well on the oracle while detecting
+        nothing.  Drift now fires on evidence:
+
+          * sustained violation rate in the domain's recent record
+          * accumulated weight far from baseline in either direction
+          * a recent half materially worse than the earlier half (real trend)
+
+        Sparse history still counts as drift-RISK — with too few episodes the
+        calibration is unevidenced, and claiming stability would be a stronger
+        assertion than the data supports.
         """
         history = self.get_history(norm_domain)
         weight = self.get_moral_weight(norm_domain)
-        if len(history) < 2:
+
+        if len(history) < DRIFT_MIN_EPISODES:
+            return True                       # not enough evidence to say "stable"
+        if weight < 0.8 or weight > DRIFT_WEIGHT_CEILING:
             return True
-        if weight < 0.8 or weight > 2.5:
-            return True
-        recent = history[-5:]
-        violations = sum(1 for ep in recent if ep.get("verdict") == "violation")
-        violation_rate = violations / max(1, len(recent))
-        return violation_rate > 0.6 and weight <= 1.0
+
+        def violation_rate(episodes):
+            if not episodes:
+                return 0.0
+            return sum(1 for e in episodes
+                       if e.get("verdict") == "violation") / len(episodes)
+
+        recent = history[-DRIFT_WINDOW:]
+        if violation_rate(recent) > DRIFT_RATE_LIMIT:
+            return True                       # norms eroding in this domain
+
+        # Trend: is the recent half materially worse than the earlier half?
+        midpoint = len(history) // 2
+        earlier, later = history[:midpoint], history[midpoint:]
+        return violation_rate(later) - violation_rate(earlier) > DRIFT_TREND_DELTA
+
+    def transfer_rate(self, source_domain: str, target_domain: str) -> float:
+        """
+        How much moral learning carries from one domain to another.
+
+        Previously a flat 20% between any two domains, which says that privacy
+        and confidentiality are no more related than privacy and authority.
+        The rate is now grounded in the normative structure itself: domains the
+        rule table pairs (a stable, oscillating or hard-floor relation exists)
+        are treated as adjacent and transfer more.
+        """
+        pair = frozenset((source_domain, target_domain))
+        related = (pair in _STABLE
+                   or pair in _PAIR_RULE_ID
+                   or any(pair == frozenset(f) for f in _HARD_FLOORS))
+        return TRANSFER_RELATED if related else TRANSFER_BASE
 
     def get_cross_domain_weight(self, source_domain: str, target_domain: str) -> float:
         """
         Return the effective weight for target_domain, partially elevated
         by violations in source_domain (moral learning transfer).
 
-        Transfer rate: 20% of the source domain's elevation above baseline
-        is added to the target domain's current weight.
+        Transfer is always partial: a domain never inherits the full elevation
+        of another, or a single bad streak would drag every norm up with it.
         """
-        source_norm = get_norm(source_domain)
-        target_norm = get_norm(target_domain)
-        if source_norm is None or target_norm is None:
+        if get_norm(source_domain) is None or get_norm(target_domain) is None:
             return 1.0
         source_elevation = max(0.0, self.get_moral_weight(source_domain) - 1.0)
-        transfer         = source_elevation * 0.20
+        transfer = source_elevation * self.transfer_rate(source_domain, target_domain)
         return self.get_moral_weight(target_domain) + transfer
+
+    def _relax_earned_strictness(self, norm_domain: str) -> None:
+        """Move a norm's earned weight back toward baseline after compliance."""
+        norm = NORMS.get(norm_domain)
+        if not norm:
+            return
+        weight = norm.get("weight", 1.0)
+        if weight > 1.0:
+            norm["weight"] = max(1.0, 1.0 + (weight - 1.0) * (1.0 - COMPLIANCE_RELAXATION))
 
     # ── Internal ──────────────────────────────────────────────────────────────
 
@@ -1381,21 +1461,73 @@ class ContinuityLayer:
                 self.episodes.append(ep)
                 self._persist(ep)
 
-    def _synchronize_norms_from_history(self) -> None:
-        """Rebuild continuity-derived moral weights from accumulated history."""
-        violation_counts: dict[str, int] = {domain: 0 for domain in NORMS}
-        for ep in self.episodes:
-            domain = ep.get("norm_domain")
-            if domain in violation_counts and ep.get("verdict") == "violation":
-                violation_counts[domain] += 1
+    def _episode_moral_load(self, episode: dict, now: float) -> float:
+        """
+        How much one past episode still weighs on the present.
+
+        The old accumulation was `0.015 × min(count, 3)` — flat, capped at
+        three, and blind to everything about the episodes themselves.  Under it
+        a deliberate catastrophic breach and three trivial slips were
+        indistinguishable, and nothing after the third episode counted at all.
+
+        Three factors now matter, which is what makes this character rather
+        than a tally:
+
+          severity   a serious violation weighs more than a minor one
+          recency    an old violation still counts, but less than a fresh one
+          intent     a deliberate act weighs more than an accidental one
+        """
+        if episode.get("verdict") != "violation":
+            return 0.0
+
+        try:
+            severity = max(0.0, min(1.0, float(episode.get("severity", 0.0))))
+        except (TypeError, ValueError):
+            return 0.0
+
+        age = max(0.0, now - float(episode.get("timestamp", now)))
+        recency = 0.5 ** (age / CONTINUITY_HALF_LIFE)
+
+        intent = episode.get("intent") or episode.get("scores", {}).get("intent")
+        intent_factor = 1.3 if intent == "deliberate" else 1.0
+
+        return severity * recency * intent_factor
+
+    def _recompute_domain_weights(self) -> None:
+        """
+        Rebuild continuity-derived moral weights from accumulated history.
+
+        Called at construction AND after every `record()`.  Running it only in
+        __init__ — as this class did until Phase 5 — meant an episode recorded
+        during a session never reached `domain_weights`, so within a live
+        session the continuity layer was a log rather than character.
+        """
+        now = time.time()
+        load: dict[str, float] = {domain: 0.0 for domain in NORMS}
+
+        # Weigh each episode once.  A history file that has accumulated
+        # duplicates — a re-seed after a key rotation, a replayed log — must not
+        # make the agent's conscience heavier than its actual conduct warrants.
+        counted = set()
+        for episode in self.episodes:
+            episode_id = episode.get("episode_id")
+            if episode_id is not None:
+                if episode_id in counted:
+                    continue
+                counted.add(episode_id)
+            domain = episode.get("norm_domain")
+            if domain in load:
+                load[domain] += self._episode_moral_load(episode, now)
 
         for domain in BASELINE_NORMS:
-            count = violation_counts.get(domain, 0)
-            effective_count = min(count, 3)  # keep continuity effects stable
+            elevation = min(MAX_CONTINUITY_ELEVATION,
+                            CONTINUITY_SCALE * load.get(domain, 0.0))
             self.domain_weights[domain] = max(
-                MIN_NORM_WEIGHT,
-                min(MAX_NORM_WEIGHT, 1.0 + 0.015 * effective_count),
-            )
+                MIN_NORM_WEIGHT, min(MAX_NORM_WEIGHT, 1.0 + elevation))
+
+    # Retained under the original name: scenarios.py and any external caller
+    # may still reference it.
+    _synchronize_norms_from_history = _recompute_domain_weights
 
     def reset(self) -> None:
         """Total wipe of history and memory state for a new session."""

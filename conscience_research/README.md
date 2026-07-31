@@ -94,6 +94,7 @@ Compare to autoresearch:
 - `diagnostics/probe_fresh_holdout.py`: untuned generalisation probe (29/30)
 - `diagnostics/probe_severity_injection.py`: guardrail bypass regression test
 - `diagnostics/probe_defensibility.py`: second oracle from the 13,692 orderings
+- `diagnostics/probe_continuity_character.py`: memory-vs-character regression test
 
 ---
 
@@ -210,7 +211,8 @@ Composite of five 10-scenario layer scores, equally weighted.
 > A perfect score here means the oracle is exhausted, not that the system has a
 > conscience — on 150 held-out scenarios the same code scores **0.911**, and it
 > resolves norm conflicts from `normative_rules.csv` with hard floors HF1–HF4
-> enforced absolutely, but its continuity layer is still a log (**0.700**).
+> enforced absolutely, and its continuity layer shapes present judgment rather
+> than logging it.
 >
 > Use `python evaluate_heldout.py` for a measurement that still moves.
 > See [STRATEGY.md](./STRATEGY.md).
