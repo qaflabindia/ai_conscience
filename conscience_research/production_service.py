@@ -7,7 +7,6 @@ conscience engine gates actions in real time.
 
 from __future__ import annotations
 
-import base64
 import copy
 import hmac
 import json
@@ -68,21 +67,7 @@ def is_admin_request(headers: Any, client_host: str) -> bool:
 
 
 class SecurePipeline:
-    """Handles overhauling of encryption, decryption, and encoding safety."""
-    
-    @staticmethod
-    def encode_b64(text: str) -> str:
-        if not text: return ""
-        return base64.b64encode(text.encode("utf-8")).decode("ascii")
-
-    @staticmethod
-    def decode_b64(b64_str: str) -> str:
-        if not b64_str: return ""
-        try:
-            return base64.b64decode(b64_str.encode("ascii")).decode("utf-8")
-        except:
-            # Fallback for non-b64 if needed, but in strict overhaul we expect b64
-            return b64_str
+    """Text clean-up for user input and model output."""
 
     @staticmethod
     def sanitize(text: str) -> str:
@@ -297,19 +282,10 @@ def decision_payload(
     return response, HTTPStatus.OK
 
 
-def log_debug(msg: str) -> None:
-    try:
-        with open("debug_log.txt", "a", encoding="utf-8") as f:
-            f.write(f"[{datetime.now().isoformat()}] {msg}\n")
-    except:
-        pass
-
 
 def chat_payload(
     payload: dict[str, Any], allow_mutation: bool = False
 ) -> tuple[dict[str, Any], int]:
-    log_debug("START chat_payload")
-    
     api_key = SecurePipeline.sanitize(payload.get("api_key", ""))
     api_key = "".join(c for c in api_key if 32 <= ord(c) <= 126).strip()
     message = SecurePipeline.sanitize(payload.get("message", ""))

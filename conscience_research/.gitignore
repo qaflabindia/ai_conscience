@@ -13,3 +13,6 @@ norms.json
 
 # Shared hash-chained decision audit (trust_contracts.JsonlAudit)
 decision_audit.jsonl
+
+# Experiment log from program.md (kept untracked)
+results.tsv

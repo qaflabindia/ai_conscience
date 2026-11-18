@@ -109,7 +109,6 @@ BASELINE_THRESHOLDS: dict[str, float] = {
 
 
 NORMS_FILE = "norms.json"
-SELF_JUDGMENT_FILE = "self_judgment.json"
 
 
 def _env_enabled(name: str, default: str = "0") -> bool:
@@ -730,7 +729,7 @@ class ContinuityLayer:
                 # Fallback for old plain text data (migration)
                 try:
                     self.episodes.append(json.loads(line.decode("utf-8")))
-                except:
+                except ValueError:
                     pass
 
     def _seed_test_episodes(self) -> None:

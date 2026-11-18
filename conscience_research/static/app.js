@@ -402,7 +402,7 @@ async function applyPreset(values) {
             state.norms[domain].threshold = threshold;
             // Sync to backend
             try {
-                await fetch('/api/norms', {
+                await fetch('/v1/norms/threshold', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ domain, threshold })
