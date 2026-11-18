@@ -1,7 +1,7 @@
 """Conscience engine as an advisory input to the CITD trust gate.
 
 This is the one integration point between normative scoring (agent.py) and
-trust decisions (citd/). Rules, matching paper v2 §4.1 and §6.2:
+trust decisions (citd/). Rules, from the CITD decision contract:
 
 - assess() is read-only. It scores the agent's self-assessment and checks the
   code-level hard floors. It can only make a gate decision stricter:
