@@ -49,7 +49,7 @@ This document captures a production-oriented view of the current `conscience_res
   - continuity in-memory cache
 
 - file-based:
-  - `moral_history.jsonl` for continuity persistence
+  - `moral_history.jsonl` for continuity persistence: append-only, one episode per line, created in the working directory (gitignored). New episodes are Fernet-encrypted with `research.key`; older plain-text lines are still read. A revoked incident is recorded as a new `revoked` episode, and continuity rebuilds skip the episode it withdraws. Seed episodes `ep_001`–`ep_009` are added automatically, so a fresh deployment needs no history file.
 
 ### 1.5 Deployment view
 

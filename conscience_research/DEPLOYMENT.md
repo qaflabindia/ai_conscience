@@ -104,7 +104,7 @@ curl -s -X POST http://localhost:8080/v1/guardrail/decision \
 - Restrict network access to trusted internal clients
 - Send request/decision logs to centralized observability
 - Alert on drop in `/v1/evaluate` `conscience_score`
-- Back up `moral_history.jsonl` if using continuity recording
+- Back up `moral_history.jsonl` **together with `research.key`** if using continuity recording. New episodes are Fernet-encrypted with that key, so the history cannot be read without it. Both files are created in the service's working directory, and both are gitignored: never commit the key.
 - Roll out using canary or blue/green and compare decision deltas
 
 ## Suggested SLOs

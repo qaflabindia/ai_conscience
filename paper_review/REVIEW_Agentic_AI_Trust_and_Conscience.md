@@ -126,7 +126,7 @@ These are for `conscience_research/`. They are not part of the paper, but the pa
 5. Move the HF1–HF4 checks out of the prompt and into code predicates.
 6. Add the test suite the paper claims exists.
 
-**Status (19 Nov 2026): all six fixes applied in this worktree, not yet committed.**
+**Status (19 Nov 2026): all six fixes applied and committed (`e1f3f03`).**
 
 1. Done. The overwriting lines are gone, and callers who are not authorised for mutation always get a dry run.
 2. Done. `GET /v1/reset` returns 405. `POST /v1/reset`, `POST /v1/norms/threshold` (now range-checked to 0–1) and any mutating guardrail or chat call need admin authorisation: a `CONSCIENCE_ADMIN_TOKEN` bearer token, or a loopback client when no token is set. The UI now resets with POST.
@@ -136,6 +136,14 @@ These are for `conscience_research/`. They are not part of the paper, but the pa
 6. Done. `conscience_research/tests/test_guardrail_controls.py` has 25 tests covering all of the above, including live HTTP checks. All pass. The scenario harness is unchanged: 1.000 in baseline mode, 0.9927 in third-eye mode.
 
 Note: the harness's L4 scenarios score weight changes, not verdict changes. That is why it scored 1.000 even when binding had no effect. The paper should report this as an oracle-validity finding.
+
+**Data files (19 Nov 2026).** The repository held two versions of the priority-ordering table (13,692 orderings each). They are now one file, `all_priority_orderings_with_rules.csv`, with the corrected content. The corrected version:
+
+- removes hard-floor tags duplicated into `rule_id` (4,467 rows, for example `S8/HF3` → `S8`), because the `hard_floor_risk` column already records them;
+- marks `F > Hm` (HF3) and `Au > Hm` (HF1) as `indefensible` instead of `context_dependent`, as `conscience_system_prompt.md` requires;
+- makes 11 smaller edits to switch parameters, rule names, one defensibility label and one example scenario.
+
+No code reads the table: HF1–HF4 are enforced by `check_hard_floors()` in `agent.py`. The table is reference material, and it now agrees with the code. A stale plain-text copy of the seed history (`moral_history.jsonl`) was also removed from the repository root; the engine creates its own at runtime. Both earlier files remain in commit `adf8d5e`.
 
 ---
 
