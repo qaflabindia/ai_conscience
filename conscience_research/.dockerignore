@@ -1,0 +1,20 @@
+# Keep local secrets and runtime state out of the image
+.env
+.env.*
+!prod.env.example
+*.key
+*.pem
+*.p12
+moral_history.jsonl
+norms.json
+scenario_overrides.json
+decision_audit.jsonl
+debug_log.txt
+
+# Not needed at runtime
+tests/
+experiments/
+__pycache__/
+*.py[cod]
+.DS_Store
+.ipynb_checkpoints/

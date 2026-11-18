@@ -12,7 +12,6 @@ import copy
 import hmac
 import json
 import os
-import threading
 import time
 from datetime import datetime, timezone
 from http import HTTPStatus
@@ -309,7 +308,7 @@ def log_debug(msg: str) -> None:
 def chat_payload(
     payload: dict[str, Any], allow_mutation: bool = False
 ) -> tuple[dict[str, Any], int]:
-    log_debug(f"START chat_payload (Secure Overhaul)")
+    log_debug("START chat_payload")
     
     api_key = SecurePipeline.sanitize(payload.get("api_key", ""))
     api_key = "".join(c for c in api_key if 32 <= ord(c) <= 126).strip()
@@ -649,9 +648,6 @@ class ConscienceRequestHandler(BaseHTTPRequestHandler):
 
     def _serve_static(self, path: str) -> None:
         # Simple static file server
-        parts = path.split("/")
-        filename = parts[-1]
-        
         # Security: don't allow directory traversal
         if ".." in path:
             self._write_json(HTTPStatus.FORBIDDEN, {"error": "forbidden"})

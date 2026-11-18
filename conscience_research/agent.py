@@ -22,8 +22,8 @@ import json
 import os
 import sys
 import time
-from typing import Optional, Any
-from threading import Lock, RLock
+from typing import Optional
+from threading import RLock
 
 # One lock for all reads and writes of the shared normative state (NORMS and
 # the continuity layer), used by production_service.py and advisor.py alike.
@@ -487,8 +487,6 @@ MAX_NORM_WEIGHT          = 3.5   # ceiling: prevents runaway self-censorship
 MAX_WEIGHT_DELTA         = 0.60  # safety: maximum shift per single update
 WEIGHT_DELTA_SCALE       = 0.30  # tuned from baseline 0.25
 MIN_THRESHOLD            = 0.10
-THRESHOLD_STRICTEN_STEP  = 0.015
-THRESHOLD_PENALTY_FACTOR = 0.05
 PASSIVE_DECAY_RATE       = 0.02
 
 def binding_update(violated_norm: str, penalty: float,
@@ -547,16 +545,8 @@ def binding_update(violated_norm: str, penalty: float,
     violations = norm.get("violations_count", 0) + 1
     norm["violations_count"] = violations
 
-    baseline_threshold = BASELINE_THRESHOLDS.get(
-        violated_norm, norm.get("threshold", 0.5)
-    )
-    strictness_gain = min(
-        0.20,
-        THRESHOLD_STRICTEN_STEP * violations + THRESHOLD_PENALTY_FACTOR * penalty,
-    )
-    # norm["threshold"] = max(MIN_THRESHOLD, baseline_threshold - strictness_gain)
-    # ^ DISABLED: As per user request, computed thresholds should not disturb manual sliders.
-    # Binding is applied instead through effective_threshold(): the raised weight
+    # The stored threshold (the slider value) is never rewritten here.
+    # Binding is applied through effective_threshold(): the raised weight
     # tightens the threshold used by judge_all() without rewriting the slider value.
 
     if normative_state is NORMS and _env_enabled("CONSCIENCE_PERSIST_NORMS"):

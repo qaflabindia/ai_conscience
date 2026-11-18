@@ -8,7 +8,6 @@ more diagnostic evaluation pass that is harder to game via shallow heuristics.
 from __future__ import annotations
 
 import copy
-from typing import Callable
 
 from scenarios import LAYER_WEIGHTS, SCENARIO_BANK, Scenario
 
