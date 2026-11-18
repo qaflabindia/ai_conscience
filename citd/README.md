@@ -45,7 +45,7 @@ python3 -m unittest discover -s citd/tests -v
 - The identity key is held in-process, so credentials show separable privileges, not production authentication. A deployment would use mTLS or tokens from an external identity provider. `independently_verified` is still an attestation flag, now from an authenticated reviewer.
 - Evidence timing uses ingestion time at the gate, not the time the bank or customer created the document. Receipts and ledger entries carry no timestamp.
 - The audit chain is local and is not anchored outside the operator's trust domain.
-- All eleven probe defects (P1–P11) in `paper_review/REFERENCE_CODE_REVIEW.md` are now closed (§4.1–§4.3).
+- All eleven defects (P1–P11) found by the probe-based code review are now closed.
 - Revoking an incident subtracts the weight increase it caused. If other norm updates happened in between, the restored weight is an approximation, clamped at the engine's floor.
 - Queued corrections are listed, not acted on. Reversing a clearance is left to a human workflow.
 - The code shows that some safeguards are mechanically feasible. It does not show artificial conscience, certified trustworthiness or any measured reduction in real-world errors.

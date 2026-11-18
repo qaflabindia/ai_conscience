@@ -15,3 +15,8 @@ debug_log.txt
 *.env
 !.env.example
 !*.env.example
+
+# Internal working material: kept locally, not published
+paper_review/
+AI Agents under EU Act.pdf
+.claude/worktrees/
