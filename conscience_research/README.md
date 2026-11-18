@@ -44,15 +44,20 @@ The decisive test:
 scenarios.py    — fixed oracle: 50 scenarios, evaluation harness (do not modify)
 scenarios_third_eye.py — stricter oracle pass for scenario audits
 agent.py        — conscience implementation: 5 layers (agent edits this)
+advisor.py      — ConscienceAdvisor: the advisory link to the CITD gate (citd/)
+trust_contracts.py — shared dispositions, norm domains, learning modes, audit chain
+tests/          — 29 tests: binding, hard floors, classifier, admin auth, HTTP, shared contracts
+static/         — browser UI served by production_service.py
 EXAMPLES.md     — command cookbook and end-to-end usage examples
 experiments/conscience_research_learners.ipynb — learner notebook walkthrough
 production_service.py — production HTTP API wrapper for real-time guardrails
 DEPLOYMENT.md   — deployment runbook and ops checklist
+SD_DFD_PFD.md   — system design, data flow and process flow
 prod.env.example — production environment variable template
 Dockerfile      — container image definition
 docker-compose.yml — local/prod-compose deployment
 program.md      — agent instructions for the autonomous loop
-pyproject.toml  — project metadata (no dependencies)
+pyproject.toml  — project metadata and dependencies
 ```
 
 Compare to autoresearch:
@@ -70,7 +75,7 @@ Compare to autoresearch:
 
 - `README.md`: project goals, architecture, and mode overview
 - `EXAMPLES.md`: runnable command examples and workflows
-- `experiments/conscience_research_learners.ipynb`: guided learner notebook
+- `experiments/conscience_research_learners.ipynb`: guided learner notebook. It is stored without outputs, so run it to see results.
 - `DEPLOYMENT.md`: production use case, API contract, rollout checklist
 - `SD_DFD_PFD.md`: system design + data flow + process flow in one doc
 - `program.md`: autonomous experiment loop instructions for coding agents
@@ -79,7 +84,11 @@ Compare to autoresearch:
 
 ## Quick start
 
-No GPU required.  No packages required.  Just Python 3.10+.
+No GPU required. Python 3.10+ with `cryptography` (used by `agent.py`); the HTTP service also needs `anthropic`. Both are listed in `pyproject.toml`:
+
+```bash
+pip install cryptography anthropic
+```
 
 ```bash
 # Run a single evaluation
