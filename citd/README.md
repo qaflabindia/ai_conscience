@@ -6,7 +6,7 @@ A reference implementation of evidence-gated delegation for a synthetic bank-rec
 
 - `citd_reference.py`: the trust gate. It uses an in-memory SQLite database, trusted-adapter ingestion, independent-source payer attribution, ALLOW/HOLD/ESCALATE/BLOCK dispositions, idempotent atomic dispatch, and governed learning.
 - `agentic_trust_metrics.py`: inference-serving and decision metrics, including verified safe goodput.
-- `tests/`: 34 tests. These are the original 16 plus 18 that cover the shared contracts, conscience advice, governed learning, evidence sources and integrity checks.
+- `tests/`: 47 tests. These are the original 16, 18 that cover the shared contracts, conscience advice, governed learning, evidence sources and integrity checks, and 13 for evidence consumption, amount mismatches and the restriction lifecycle.
 
 ## How it connects to the conscience engine
 
@@ -22,7 +22,8 @@ A reference implementation of evidence-gated delegation for a synthetic bank-rec
 The integration point is `conscience_research/advisor.py` (`ConscienceAdvisor`):
 
 - **During a decision**, `CITD.evaluate()` runs the deterministic gate first and then asks the advisor to score the agent's `self_assessment`. Advice can only make the result *stricter*: a hard floor caps it at BLOCK, and a flagged norm domain caps it at ESCALATE. If the advisor fails, the result is ESCALATE. Advice can never turn HOLD into ALLOW.
-- **After a promoted incident**, `CITD.promote_learning()` suspends the feed (the policy restriction) and then calls `advisor.learn_from_incident()`. That records the incident in the continuity layer and raises the weight of each implicated norm domain, which tightens its effective threshold for later advice. The feed restriction is committed first, so a failure here can only leave the system stricter.
+- **After a promoted incident**, `CITD.promote_learning()` activates the restriction (the whole feed, or one importer version of it, optionally until an expiry time), queues every earlier clearance in that scope for correction, and then calls `advisor.learn_from_incident()`. That records the incident in the continuity layer and raises the weight of each implicated norm domain, which tightens its effective threshold for later advice. The restriction is committed first, so a failure here can only leave the system stricter.
+- **On revocation**, `CITD.revoke_learning()` (controller only, with a recorded reason) lifts the restriction and calls `advisor.revert_incident()`, which subtracts the weight increase and appends a `revoked` episode. History is never edited. Queued corrections stay open.
 
 ## Run
 
@@ -37,9 +38,9 @@ python3 -m unittest discover -s citd/tests -v
 
 - Identities are **demo caller strings**, not authentication. `independently_verified` is a flag supplied by the caller.
 - The audit chain is local and is not anchored outside the operator's trust domain.
-- Open defects from the review (`paper_review/REFERENCE_CODE_REVIEW.md` §1) are **not fixed here**:
-  - P1: one remittance can attribute several receipts that share a bank reference.
-  - P3: a partial payment returns BLOCK.
-  - P5/P6: learning has no revoke path and no reverse path to earlier clearances.
-  - P9–P11: metric blind spots.
+- P1, P3, P5 and P6 from the review are fixed (`paper_review/REFERENCE_CODE_REVIEW.md` §4.2). Still open:
+  - P2: evidence timing is not checked.
+  - P9–P11: metric blind spots in `agentic_trust_metrics.py`.
+- Revoking an incident subtracts the weight increase it caused. If other norm updates happened in between, the restored weight is an approximation, clamped at the engine's floor.
+- Queued corrections are listed, not acted on. Reversing a clearance is left to a human workflow.
 - The code shows that some safeguards are mechanically feasible. It does not show artificial conscience, certified trustworthiness or any measured reduction in real-world errors.

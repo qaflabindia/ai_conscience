@@ -55,7 +55,8 @@ def digest(value: dict[str, Any]) -> str:
 
 def _receipt_fields(row: Any) -> dict[str, Any]:
     return {"receipt_id": row["receipt_id"], "amount": row["amount"],
-            "bank_ref": row["bank_ref"], "feed": row["feed"]}
+            "bank_ref": row["bank_ref"], "feed": row["feed"],
+            "importer_version": row["importer_version"]}
 
 
 def _ledger_fields(row: Any) -> dict[str, Any]:
@@ -111,6 +112,7 @@ class CITD:
         CREATE TABLE IF NOT EXISTS receipts (
             receipt_id TEXT PRIMARY KEY, amount INTEGER NOT NULL,
             bank_ref TEXT NOT NULL, feed TEXT NOT NULL,
+            importer_version TEXT NOT NULL,
             cleared_ledger TEXT, original_hash TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS ledger (
             ledger_id TEXT PRIMARY KEY, customer TEXT NOT NULL,
@@ -119,33 +121,43 @@ class CITD:
         CREATE TABLE IF NOT EXISTS remittances (
             remit_id TEXT PRIMARY KEY, bank_ref TEXT NOT NULL,
             customer TEXT NOT NULL, source TEXT NOT NULL,
-            created_at TEXT NOT NULL, original_hash TEXT NOT NULL);
+            created_at TEXT NOT NULL, original_hash TEXT NOT NULL,
+            consumed_by_receipt TEXT);
         CREATE TABLE IF NOT EXISTS completed (
             idempotency_key TEXT PRIMARY KEY, receipt_id TEXT NOT NULL,
             ledger_id TEXT NOT NULL, committed_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS learning_proposals (
             incident_id TEXT PRIMARY KEY, feed TEXT NOT NULL,
+            importer_version TEXT,            -- NULL: whole feed
             norm_domains TEXT NOT NULL, verified_by TEXT NOT NULL,
-            change_summary TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'PENDING');
-        CREATE TABLE IF NOT EXISTS feed_controls (
-            feed TEXT PRIMARY KEY, suspended INTEGER NOT NULL DEFAULT 0,
-            version INTEGER NOT NULL DEFAULT 0);
+            change_summary TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'PENDING',
+            expires_at TEXT,                  -- NULL: until revoked
+            normative_update TEXT);           -- JSON of the applied norm change
+        CREATE TABLE IF NOT EXISTS correction_queue (
+            incident_id TEXT NOT NULL, receipt_id TEXT NOT NULL,
+            ledger_id TEXT NOT NULL, importer_version TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'OPEN', queued_at TEXT NOT NULL,
+            PRIMARY KEY (incident_id, receipt_id));
+        CREATE TABLE IF NOT EXISTS feed_controls (   -- registry of known feeds;
+            feed TEXT PRIMARY KEY);                    -- restrictions live in learning_proposals
         """)
         self.audit = SqliteAudit(self.db)
 
     # ── Ingestion (trusted adapters only) ────────────────────────────────────
 
     def ingest_receipt(self, receipt_id: str, amount: int, bank_ref: str,
-                       feed: str, *, caller: str) -> None:
+                       feed: str, *, caller: str, importer_version: str = "v1") -> None:
         if caller != "bank_adapter":
             raise PermissionError("Only authenticated bank adapter may ingest receipts")
         if amount <= 0:
             raise ValueError("Amount must be positive minor currency units")
-        row = {"receipt_id": receipt_id, "amount": amount, "bank_ref": bank_ref, "feed": feed}
-        self.db.execute("INSERT INTO receipts VALUES(?,?,?,?,NULL,?)",
-                        (receipt_id, amount, bank_ref, feed, digest(row)))
+        row = {"receipt_id": receipt_id, "amount": amount, "bank_ref": bank_ref,
+               "feed": feed, "importer_version": importer_version}
+        self.db.execute("INSERT INTO receipts VALUES(?,?,?,?,?,NULL,?)",
+                        (receipt_id, amount, bank_ref, feed, importer_version, digest(row)))
         self.db.execute("INSERT OR IGNORE INTO feed_controls(feed) VALUES(?)", (feed,))
-        self.audit.append("RECEIPT_INGESTED", {"receipt_id": receipt_id, "feed": feed})
+        self.audit.append("RECEIPT_INGESTED", {"receipt_id": receipt_id, "feed": feed,
+                                               "importer_version": importer_version})
 
     def ingest_ledger(self, ledger_id: str, customer: str, amount: int,
                       *, caller: str) -> None:
@@ -163,7 +175,7 @@ class CITD:
         if source not in INDEPENDENT_SOURCES | DERIVED_SOURCES:
             raise ValueError(f"Unknown remittance source: {source}")
         row = {"remit_id": remit_id, "bank_ref": bank_ref, "customer": customer, "source": source}
-        self.db.execute("INSERT INTO remittances VALUES(?,?,?,?,?,?)",
+        self.db.execute("INSERT INTO remittances VALUES(?,?,?,?,?,?,NULL)",
                         (remit_id, bank_ref, customer, source, now(), digest(row)))
         self.audit.append("REMITTANCE_INGESTED", {
             "remit_id": remit_id, "source": source,
@@ -206,22 +218,37 @@ class CITD:
         if (digest(_receipt_fields(receipt)) != receipt["original_hash"]
                 or digest(_ledger_fields(ledger)) != ledger["original_hash"]):
             return D.HOLD, "Evidence integrity check failed", ("honesty",), True
-        feed = self.db.execute("SELECT * FROM feed_controls WHERE feed=?",
-                               (receipt["feed"],)).fetchone()
-        if feed and feed["suspended"]:
-            return D.BLOCK, "Verified incident has suspended this feed", ("harm", "authority"), True
+        restriction = self._active_restriction(receipt["feed"], receipt["importer_version"])
+        if restriction:
+            return (D.BLOCK, f"Verified incident {restriction} has suspended this feed",
+                    ("harm", "authority"), True)
         if receipt["amount"] > self.MAX_AUTO_AMOUNT:
             return D.ESCALATE, "Amount exceeds automatic delegation", ("authority", "harm"), True
-        if receipt["amount"] != ledger["amount"]:
-            return D.BLOCK, "Amount mismatch", ("honesty", "harm"), True
         if receipt["cleared_ledger"]:
             return D.BLOCK, "Receipt already consumed", ("honesty", "authority"), True
         if ledger["cleared_receipt"]:
             return D.BLOCK, "Ledger entry already consumed", ("honesty", "authority"), True
+        if receipt["amount"] != ledger["amount"]:
+            # Partial, combined or fee-reduced payments are routine exceptions,
+            # not impermissible actions: hold for allocation evidence.
+            kind = "Partial" if receipt["amount"] < ledger["amount"] else "Overpayment or combined"
+            return (D.HOLD, f"{kind} payment: allocation evidence required",
+                    ("honesty", "harm"), True)
 
-        # Only independent sources attribute a payer; derived copies never count.
+        # A truncated or reused bank reference shared by several open receipts
+        # cannot be attributed one-to-one, whatever the remittances say.
+        open_same_ref = self.db.execute(
+            "SELECT COUNT(*) FROM receipts WHERE bank_ref=? AND cleared_ledger IS NULL",
+            (receipt["bank_ref"],)).fetchone()[0]
+        if open_same_ref > 1:
+            return (D.HOLD, "Bank reference shared by several open receipts",
+                    ("honesty", "harm", "fairness"), True)
+
+        # Only independent, unconsumed remittances attribute a payer; derived
+        # copies never count, and each remittance justifies at most one clearance.
         independent = [r for r in self.db.execute(
-            "SELECT * FROM remittances WHERE bank_ref=?", (receipt["bank_ref"],))
+            "SELECT * FROM remittances WHERE bank_ref=? AND consumed_by_receipt IS NULL",
+            (receipt["bank_ref"],))
             if r["source"] in INDEPENDENT_SOURCES]
         if any(digest(_remittance_fields(r)) != r["original_hash"] for r in independent):
             return D.HOLD, "Evidence integrity check failed", ("honesty",), True
@@ -231,6 +258,23 @@ class CITD:
             return (D.HOLD, "Independent unique payer attribution not established",
                     ("honesty", "harm", "fairness"), True)
         return D.ALLOW, "Independent remittance uniquely identifies the payer", ("honesty", "authority"), True
+
+    def _active_restriction(self, feed: str, importer_version: str) -> Optional[str]:
+        """Return the incident ID of an active promoted restriction, if any."""
+        row = self.db.execute(
+            "SELECT incident_id FROM learning_proposals WHERE status='PROMOTED' AND feed=? "
+            "AND (importer_version IS NULL OR importer_version=?) "
+            "AND (expires_at IS NULL OR expires_at > ?) ORDER BY incident_id LIMIT 1",
+            (feed, importer_version, now())).fetchone()
+        return row["incident_id"] if row else None
+
+    def _matching_remittance(self, receipt_id: str, ledger_id: str) -> Any:
+        receipt = self.db.execute("SELECT * FROM receipts WHERE receipt_id=?", (receipt_id,)).fetchone()
+        ledger = self.db.execute("SELECT * FROM ledger WHERE ledger_id=?", (ledger_id,)).fetchone()
+        rows = [r for r in self.db.execute(
+            "SELECT * FROM remittances WHERE bank_ref=? AND customer=? AND consumed_by_receipt IS NULL",
+            (receipt["bank_ref"], ledger["customer"])) if r["source"] in INDEPENDENT_SOURCES]
+        return rows[0] if len(rows) == 1 else None
 
     def evaluate(self, p: Proposal) -> Verdict:
         disposition, reason, domains, authorised = self._gate(p)
@@ -273,6 +317,15 @@ class CITD:
             else:
                 outcome = self.evaluate(p)  # re-evaluate inside the transaction
                 if outcome.allowed:
+                    remittance = self._matching_remittance(p.receipt_id, p.ledger_id)
+                    if remittance is None:
+                        raise RuntimeError("Attribution evidence changed during dispatch")
+                    consumed = self.db.execute(
+                        "UPDATE remittances SET consumed_by_receipt=? "
+                        "WHERE remit_id=? AND consumed_by_receipt IS NULL",
+                        (p.receipt_id, remittance["remit_id"])).rowcount
+                    if consumed != 1:
+                        raise RuntimeError("Concurrent update detected")
                     changed_receipt = self.db.execute(
                         "UPDATE receipts SET cleared_ledger=? WHERE receipt_id=? AND cleared_ledger IS NULL",
                         (p.ledger_id, p.receipt_id)).rowcount
@@ -299,26 +352,45 @@ class CITD:
 
     def propose_learning(self, incident_id: str, feed: str, *, actor: str,
                          independently_verified: bool,
-                         norm_domains: tuple[str, ...]) -> None:
+                         norm_domains: tuple[str, ...],
+                         importer_version: Optional[str] = None,
+                         expires_at: Optional[str] = None) -> None:
+        """Propose a restriction from an adjudicated incident.
+
+        importer_version scopes the restriction to receipts imported by one
+        importer version (None: the whole feed). expires_at is an ISO-8601 UTC
+        time after which the restriction lapses (None: until revoked).
+        """
         # A self-critique is not ground truth. Only a reviewer can attest to an incident.
         if actor != "independent_reviewer" or not independently_verified:
             raise PermissionError("Independent incident adjudication required")
         domains = validate_norms(norm_domains)
         if not domains:
             raise ValueError("An incident must name at least one norm domain")
+        if expires_at is not None:
+            datetime.fromisoformat(expires_at)  # raises ValueError if malformed
         found = self.db.execute("SELECT feed FROM feed_controls WHERE feed=?", (feed,)).fetchone()
         if not found:
             raise ValueError("Unknown feed")
+        scope = f"feed {feed}" + (f", importer {importer_version}" if importer_version else "")
         self.db.execute(
-            "INSERT INTO learning_proposals VALUES(?,?,?,?,?, 'PENDING')",
-            (incident_id, feed, json.dumps(list(domains)), actor,
-             "Suspend automatic clearance on implicated feed; raise implicated norm weights"))
+            "INSERT INTO learning_proposals(incident_id, feed, importer_version, norm_domains, "
+            "verified_by, change_summary, expires_at) VALUES(?,?,?,?,?,?,?)",
+            (incident_id, feed, importer_version, json.dumps(list(domains)), actor,
+             f"Suspend automatic clearance on {scope}; raise implicated norm weights",
+             expires_at))
         self.audit.append("LEARNING_PROPOSED", {
-            "incident_id": incident_id, "feed": feed, "norm_domains": list(domains),
+            "incident_id": incident_id, "feed": feed, "importer_version": importer_version,
+            "expires_at": expires_at, "norm_domains": list(domains),
             "learning_mode": LearningMode.GOVERNED.value})
 
     def promote_learning(self, incident_id: str, *, actor: str) -> dict[str, Any]:
-        """Promote a verified incident. Returns the normative update applied, if any."""
+        """Promote a verified incident.
+
+        In one transaction: activate the restriction and queue every earlier
+        clearance in its scope for correction (the reverse path). Then apply
+        the normative update through the conscience advisor.
+        """
         if actor != "finance_controller":
             raise PermissionError("Only delegated controller can promote a new restriction")
         self.db.execute("BEGIN IMMEDIATE")
@@ -329,30 +401,95 @@ class CITD:
             if not row:
                 raise ValueError("No pending verified incident")
             domains = validate_norms(json.loads(row["norm_domains"]))
-            self.db.execute("UPDATE feed_controls SET suspended=1,version=version+1 WHERE feed=?",
-                            (row["feed"],))
             self.db.execute("UPDATE learning_proposals SET status='PROMOTED' WHERE incident_id=?",
                             (incident_id,))
+            affected = self.db.execute(
+                "SELECT receipt_id, cleared_ledger, importer_version FROM receipts "
+                "WHERE feed=? AND cleared_ledger IS NOT NULL "
+                "AND (? IS NULL OR importer_version=?) ORDER BY receipt_id",
+                (row["feed"], row["importer_version"], row["importer_version"])).fetchall()
+            queued_at = now()
+            for r in affected:
+                self.db.execute(
+                    "INSERT OR IGNORE INTO correction_queue(incident_id, receipt_id, ledger_id, "
+                    "importer_version, queued_at) VALUES(?,?,?,?,?)",
+                    (incident_id, r["receipt_id"], r["cleared_ledger"],
+                     r["importer_version"], queued_at))
+            corrections = [r["receipt_id"] for r in affected]
             self.audit.append("LEARNING_PROMOTED", {
-                "incident_id": incident_id, "feed": row["feed"], "norm_domains": list(domains),
+                "incident_id": incident_id, "feed": row["feed"],
+                "importer_version": row["importer_version"], "expires_at": row["expires_at"],
+                "norm_domains": list(domains), "corrections_queued": corrections,
                 "learning_mode": LearningMode.GOVERNED.value})
             self.db.execute("COMMIT")
         except Exception:
             self.db.execute("ROLLBACK")
             raise
 
-        # The feed restriction is committed first, so a failure below can only
+        result: dict[str, Any] = {
+            "learning_mode": LearningMode.GOVERNED.value,
+            "incident_id": incident_id,
+            "corrections_queued": corrections,
+            "normative_update": None,
+        }
+        # The restriction is committed first, so a failure below can only
         # leave the system stricter, never looser.
         if self.advisor is None:
-            return {}
+            return result
         try:
             update = self.advisor.learn_from_incident(incident_id, domains)
         except Exception as err:
             self.audit.append("NORMATIVE_UPDATE_FAILED", {
                 "incident_id": incident_id, "error": type(err).__name__})
             raise
+        self.db.execute("UPDATE learning_proposals SET normative_update=? WHERE incident_id=?",
+                        (json.dumps(update, sort_keys=True), incident_id))
         self.audit.append("NORMATIVE_UPDATE_APPLIED", update)
-        return update
+        result["normative_update"] = update
+        return result
+
+    def revoke_learning(self, incident_id: str, *, actor: str, reason: str) -> dict[str, Any]:
+        """Lift a promoted restriction and reverse its normative update.
+
+        The adjudication history stays in the audit chain (irreversible logs);
+        only the operational restriction is reversed (reversible decisions).
+        Queued corrections stay open: they concern clearances already made.
+        """
+        if actor != "finance_controller":
+            raise PermissionError("Only delegated controller can revoke a restriction")
+        if not reason.strip():
+            raise ValueError("A revocation needs a recorded reason")
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            row = self.db.execute(
+                "SELECT * FROM learning_proposals WHERE incident_id=? AND status='PROMOTED'",
+                (incident_id,)).fetchone()
+            if not row:
+                raise ValueError("No promoted restriction with that incident ID")
+            self.db.execute("UPDATE learning_proposals SET status='REVOKED' WHERE incident_id=?",
+                            (incident_id,))
+            self.audit.append("LEARNING_REVOKED", {
+                "incident_id": incident_id, "feed": row["feed"], "reason": reason,
+                "learning_mode": LearningMode.GOVERNED.value})
+            self.db.execute("COMMIT")
+        except Exception:
+            self.db.execute("ROLLBACK")
+            raise
+
+        result: dict[str, Any] = {"incident_id": incident_id, "normative_reversal": None}
+        if self.advisor is not None and row["normative_update"]:
+            reversal = self.advisor.revert_incident(json.loads(row["normative_update"]))
+            self.audit.append("NORMATIVE_UPDATE_REVERSED", reversal)
+            result["normative_reversal"] = reversal
+        return result
+
+    def open_corrections(self, incident_id: Optional[str] = None) -> list[dict[str, Any]]:
+        """Clearances queued for review by promoted incidents."""
+        rows = self.db.execute(
+            "SELECT * FROM correction_queue WHERE status='OPEN' "
+            "AND (? IS NULL OR incident_id=?) ORDER BY incident_id, receipt_id",
+            (incident_id, incident_id)).fetchall()
+        return [dict(r) for r in rows]
 
 
 def demo() -> None:
@@ -369,6 +506,16 @@ def demo() -> None:
                          independently_verified=True, norm_domains=("honesty", "harm"))
     update = app.promote_learning("incident-22", actor="finance_controller")
     print("Governed learning applied:", json.dumps(update, indent=2))
+    print("Clearances queued for correction:", app.open_corrections("incident-22"))
+    app.ingest_receipt("B-779", 10_000, "R-779", "bank_feed_1", caller="bank_adapter")
+    app.ingest_ledger("L-103", "CUSTOMER_C", 10_000, caller="ledger_adapter")
+    app.ingest_remittance("M-903", "R-779", "CUSTOMER_C", caller="remittance_adapter")
+    later = Proposal("recon-002", "B-779", "L-103", idempotency_key="clear-002")
+    print("While restricted:", app.dispatch(later).json())
+    revoked = app.revoke_learning("incident-22", actor="finance_controller",
+                                  reason="Root cause fixed in importer v2; replayed clean")
+    print("Restriction revoked:", json.dumps(revoked, indent=2))
+    print("After revocation:", app.dispatch(later).json())
     print("Audit chain intact:", app.verify_audit())
 
 

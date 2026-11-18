@@ -179,8 +179,9 @@ class GovernedLearningTests(unittest.TestCase):
         before = agent.effective_threshold(agent.NORMS["fairness"])
         self.app.propose_learning("inc", "feed-a", actor="independent_reviewer",
                                   independently_verified=True, norm_domains=("fairness",))
-        update = self.app.promote_learning("inc", actor="finance_controller")
-        self.assertEqual(update["learning_mode"], trust_contracts.LearningMode.GOVERNED.value)
+        result = self.app.promote_learning("inc", actor="finance_controller")
+        self.assertEqual(result["learning_mode"], trust_contracts.LearningMode.GOVERNED.value)
+        update = result["normative_update"]
         self.assertGreater(update["weight_after"]["fairness"], update["weight_before"]["fairness"])
         self.assertLess(agent.effective_threshold(agent.NORMS["fairness"]), before)
 
@@ -245,6 +246,158 @@ class EvidenceFieldTests(unittest.TestCase):
         ok, bad = self.app.verify_audit()
         self.assertFalse(ok)
         self.assertEqual(bad, 1)
+
+
+class SharedReferenceTests(unittest.TestCase):
+    """P1: one remittance attributes at most one receipt."""
+
+    def setUp(self):
+        _reset_conscience()
+        self.app = CITD()
+        self.app.ingest_ledger("L-B", "B", 50_000, caller="ledger_adapter")
+        self.app.ingest_ledger("L-B2", "B", 50_000, caller="ledger_adapter")
+
+    def test_truncated_reference_shared_by_open_receipts_holds(self):
+        self.app.ingest_receipt("B-1", 50_000, "INV", "feed-a", caller="bank_adapter")
+        self.app.ingest_receipt("B-2", 50_000, "INV", "feed-a", caller="bank_adapter")
+        self.app.ingest_remittance("M-1", "INV", "B", caller="remittance_adapter")
+        v = self.app.evaluate(Proposal("c", "B-1", "L-B", idempotency_key="k"))
+        self.assertEqual(v.disposition, "HOLD")
+        self.assertIn("shared", v.reason)
+
+    def test_remittance_is_consumed_and_cannot_be_reused(self):
+        self.app.ingest_receipt("B-1", 50_000, "INV", "feed-a", caller="bank_adapter")
+        self.app.ingest_remittance("M-1", "INV", "B", caller="remittance_adapter")
+        first = self.app.dispatch(Proposal("c1", "B-1", "L-B", idempotency_key="k1"))
+        self.assertEqual(first.disposition, "ALLOW")
+        consumed = self.app.db.execute(
+            "SELECT consumed_by_receipt FROM remittances WHERE remit_id='M-1'").fetchone()[0]
+        self.assertEqual(consumed, "B-1")
+        # A later receipt with the same reference finds no unconsumed evidence.
+        self.app.ingest_receipt("B-2", 50_000, "INV", "feed-a", caller="bank_adapter")
+        second = self.app.dispatch(Proposal("c2", "B-2", "L-B2", idempotency_key="k2"))
+        self.assertEqual(second.disposition, "HOLD")
+        self.assertIsNone(self.app.db.execute(
+            "SELECT cleared_ledger FROM receipts WHERE receipt_id='B-2'").fetchone()[0])
+
+
+class AmountMismatchTests(unittest.TestCase):
+    """P3: a partial or combined payment is a HOLD for allocation evidence, not a BLOCK."""
+
+    def setUp(self):
+        _reset_conscience()
+        self.app = CITD()
+        self.app.ingest_ledger("L-B", "B", 50_000, caller="ledger_adapter")
+        self.app.ingest_remittance("M-1", "REF", "B", caller="remittance_adapter")
+
+    def _verdict(self, amount):
+        self.app.ingest_receipt("B-1", amount, "REF", "feed-a", caller="bank_adapter")
+        return self.app.evaluate(Proposal("c", "B-1", "L-B", idempotency_key="k"))
+
+    def test_partial_payment_holds(self):
+        v = self._verdict(30_000)
+        self.assertEqual(v.disposition, "HOLD")
+        self.assertIn("Partial payment", v.reason)
+
+    def test_overpayment_holds(self):
+        v = self._verdict(70_000)
+        self.assertEqual(v.disposition, "HOLD")
+        self.assertIn("Overpayment", v.reason)
+
+
+class RestrictionLifecycleTests(unittest.TestCase):
+    """P5: restrictions can be revoked or expire. P6: earlier clearances are queued."""
+
+    def setUp(self):
+        _reset_conscience()
+        self.app = CITD()
+        self.app.ingest_ledger("L-1", "B", 10_000, caller="ledger_adapter")
+        self.app.ingest_ledger("L-2", "B", 10_000, caller="ledger_adapter")
+        self.app.ingest_ledger("L-3", "B", 10_000, caller="ledger_adapter")
+        self.app.ingest_receipt("B-1", 10_000, "R1", "feed-a", caller="bank_adapter",
+                                importer_version="v1")
+        self.app.ingest_receipt("B-2", 10_000, "R2", "feed-a", caller="bank_adapter",
+                                importer_version="v2")
+        self.app.ingest_remittance("M-1", "R1", "B", caller="remittance_adapter")
+        self.app.ingest_remittance("M-2", "R2", "B", caller="remittance_adapter")
+        self.assertEqual(self.app.dispatch(
+            Proposal("c1", "B-1", "L-1", idempotency_key="k1")).disposition, "ALLOW")
+        self.assertEqual(self.app.dispatch(
+            Proposal("c2", "B-2", "L-2", idempotency_key="k2")).disposition, "ALLOW")
+
+    def _promote(self, **kw):
+        self.app.propose_learning("inc", "feed-a", actor="independent_reviewer",
+                                  independently_verified=True, norm_domains=("honesty",), **kw)
+        return self.app.promote_learning("inc", actor="finance_controller")
+
+    def _new_receipt(self, version):
+        self.app.ingest_receipt("B-3", 10_000, "R3", "feed-a", caller="bank_adapter",
+                                importer_version=version)
+        self.app.ingest_remittance("M-3", "R3", "B", caller="remittance_adapter")
+        return Proposal("c3", "B-3", "L-3", idempotency_key="k3")
+
+    def test_promotion_queues_earlier_clearances(self):
+        result = self._promote()
+        self.assertEqual(result["corrections_queued"], ["B-1", "B-2"])
+        self.assertEqual([c["ledger_id"] for c in self.app.open_corrections("inc")],
+                         ["L-1", "L-2"])
+        promoted = [r for r in self.app.audit.records() if r["event"] == "LEARNING_PROMOTED"]
+        self.assertEqual(promoted[-1]["payload"]["corrections_queued"], ["B-1", "B-2"])
+
+    def test_importer_scope_restricts_only_that_version(self):
+        result = self._promote(importer_version="v1")
+        self.assertEqual(result["corrections_queued"], ["B-1"])
+        p = self._new_receipt("v2")
+        self.assertEqual(self.app.evaluate(p).disposition, "ALLOW")
+
+    def test_importer_scope_blocks_the_named_version(self):
+        self._promote(importer_version="v1")
+        self.assertEqual(self.app.evaluate(self._new_receipt("v1")).disposition, "BLOCK")
+
+    def test_revoke_lifts_restriction_and_reverses_weights(self):
+        baseline = agent.NORMS["honesty"]["weight"]
+        self._promote()
+        self.assertGreater(agent.NORMS["honesty"]["weight"], baseline)
+        p = self._new_receipt("v1")
+        self.assertEqual(self.app.evaluate(p).disposition, "BLOCK")
+        result = self.app.revoke_learning("inc", actor="finance_controller", reason="root cause fixed")
+        self.assertAlmostEqual(agent.NORMS["honesty"]["weight"], baseline, places=6)
+        self.assertEqual(result["normative_reversal"]["weight_restored"]["honesty"],
+                         agent.NORMS["honesty"]["weight"])
+        self.assertEqual(self.app.evaluate(p).disposition, "ALLOW")
+        # The queued corrections concern clearances already made, so they stay open.
+        self.assertEqual(len(self.app.open_corrections("inc")), 2)
+        self.assertEqual(self.app.verify_audit(), (True, None))
+
+    def test_revoked_incident_is_skipped_by_continuity_rebuild(self):
+        cl = agent.get_continuity_layer()
+        cl._synchronize_norms_from_history()
+        before = cl.domain_weights["honesty"]
+        self._promote()
+        self.app.revoke_learning("inc", actor="finance_controller", reason="false positive")
+        cl._synchronize_norms_from_history()
+        self.assertEqual(cl.domain_weights["honesty"], before)
+
+    def test_revoke_requires_controller_and_reason(self):
+        self._promote()
+        with self.assertRaises(PermissionError):
+            self.app.revoke_learning("inc", actor="finance_agent", reason="x")
+        with self.assertRaises(ValueError):
+            self.app.revoke_learning("inc", actor="finance_controller", reason="  ")
+        with self.assertRaises(ValueError):
+            self.app.revoke_learning("missing", actor="finance_controller", reason="x")
+
+    def test_expired_restriction_lapses(self):
+        self._promote(expires_at="2000-01-01T00:00:00+00:00")
+        self.assertEqual(self.app.evaluate(self._new_receipt("v1")).disposition, "ALLOW")
+
+    def test_unexpired_restriction_holds(self):
+        self._promote(expires_at="2999-01-01T00:00:00+00:00")
+        self.assertEqual(self.app.evaluate(self._new_receipt("v1")).disposition, "BLOCK")
+
+    def test_malformed_expiry_rejected(self):
+        with self.assertRaises(ValueError):
+            self._promote(expires_at="next tuesday")
 
 
 if __name__ == "__main__":

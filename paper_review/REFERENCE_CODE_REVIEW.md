@@ -101,7 +101,18 @@ The redundancy described above has been removed. The package now lives in the re
 - **One lock** (`agent.STATE_LOCK`) guards the conscience state for both the service and the advisor.
 - **Tests:** `citd/tests` has 34 (16 original + 18 new). `conscience_research/tests` has 29 (25 + 4 new). All pass. The scenario harness is unchanged at 1.000.
 
-Defects P1, P3, P5, P6 and P9–P11 are still open; they were outside the scope of this change.
+Defects P1, P3, P5, P6 and P9–P11 were still open after this change; P1, P3, P5 and P6 are resolved in §4.2.
+
+### 4.2 Gate defects P1, P3, P5, P6 resolved (19 Nov 2026)
+
+- **P1, evidence consumption.** `remittances.consumed_by_receipt` is set in the same transaction as the clearance (the UPDATE must affect exactly one unconsumed row, or the dispatch rolls back). The gate returns HOLD when a bank reference is shared by more than one open receipt, and only unconsumed independent remittances can attribute a payer. The truncated-reference scenario now gives `HOLD`, and a consumed remittance cannot clear a second receipt.
+- **P3, amount mismatch.** A partial, combined or overpayment returns `HOLD` with the reason "… payment: allocation evidence required", instead of BLOCK. There is no separate `required_evidence` field; the reason string carries it.
+- **P5, reversible learning.** `propose_learning` takes an optional `importer_version` scope and an optional ISO-8601 `expires_at`. `revoke_learning(incident_id, actor="finance_controller", reason=…)` marks the incident REVOKED, writes `LEARNING_REVOKED`, and reverses the normative update through `ConscienceAdvisor.revert_incident()`. The continuity history stays append-only: a `revoked` episode is added, and continuity rebuilds skip the withdrawn incident. A suspension is now derived from active PROMOTED rows (not a mutable flag), so revocation and expiry lift it without editing history. `independently_verified` is still a caller-supplied flag (see Known limitations).
+- **P6, reverse path.** Receipts record `importer_version`. On promotion, every earlier clearance in the restriction's scope (the feed, or one importer version of it) is queued in `correction_queue` in the same transaction, listed in the `LEARNING_PROMOTED` audit payload, and returned as `corrections_queued`. `open_corrections()` lists them. Revocation leaves queued corrections open, because they concern clearances already made.
+- **Return shape.** `promote_learning` now returns `{learning_mode, incident_id, corrections_queued, normative_update}`; the advisor's weight change is under `normative_update`.
+- **Tests:** `citd/tests` has 47 (34 + 13 new: shared reference, consumption, partial and over-payment, importer scope, revoke, expiry, continuity rebuild, permissions). `conscience_research/tests` still has 29. All pass, and the scenario harness is unchanged at 1.000.
+
+P7 and P8 were closed in §4.1 (stored hashes are verified, ledger ingestion is audited, the chain has `verify()`). Still open: P2 (evidence timing), P4 (self-declared identities) and the metric defects P9–P11.
 
 ## 5. Recommended changes (priority order)
 

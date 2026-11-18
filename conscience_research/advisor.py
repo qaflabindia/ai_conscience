@@ -116,3 +116,39 @@ class ConscienceAdvisor:
             "weight_after": after,
             "effective_threshold_after": thresholds,
         }
+
+    def revert_incident(self, update: dict[str, Any]) -> dict[str, Any]:
+        """Reverse the normative update of a revoked incident.
+
+        Subtracts the per-domain weight increase that learn_from_incident()
+        reported, clamped at the engine's weight floor, and appends a "revoked"
+        episode for each domain. The original episodes stay in the history;
+        continuity rebuilds skip them.
+        """
+        incident_id = str(update["incident_id"])
+        domains = validate_norms(update["norm_domains"])
+        before = update["weight_before"]
+        after = update["weight_after"]
+        with conscience.STATE_LOCK:
+            restored: dict[str, float] = {}
+            cl = conscience.get_continuity_layer()
+            for d in domains:
+                delta = max(0.0, float(after[d]) - float(before[d]))
+                current = float(conscience.NORMS[d]["weight"])
+                conscience.NORMS[d]["weight"] = max(conscience.MIN_NORM_WEIGHT, current - delta)
+                restored[d] = float(conscience.NORMS[d]["weight"])
+                cl.record(
+                    episode_id=f"revoke:{incident_id}:{d}",
+                    action="incident_revoked",
+                    verdict="revoked",
+                    norm_domain=d,
+                    severity=0.0,
+                    revokes=f"incident:{incident_id}:{d}",
+                )
+            conscience.save_norms()
+        return {
+            "learning_mode": LearningMode.GOVERNED.value,
+            "incident_id": incident_id,
+            "norm_domains": list(domains),
+            "weight_restored": restored,
+        }

@@ -605,8 +605,13 @@ class ContinuityLayer:
 
     def record(self, episode_id: str, action: str, verdict: str,
                norm_domain: str, severity: float, scores: dict[str, float] = None,
-               violated_domains: list[str] = None) -> None:
-        """Record a moral episode with full normative sensitivity breakdown."""
+               violated_domains: list[str] = None,
+               revokes: Optional[str] = None) -> None:
+        """Record a moral episode with full normative sensitivity breakdown.
+
+        revokes names an earlier episode that this one withdraws (verdict
+        "revoked"); the earlier episode stays in the append-only history.
+        """
         episode = {
             "episode_id":      episode_id,
             "action":          action,
@@ -617,6 +622,8 @@ class ContinuityLayer:
             "violated_domains": violated_domains or [],
             "timestamp":       time.time(),
         }
+        if revokes:
+            episode["revokes"] = revokes
         self.episodes.append(episode)
         self._persist(episode)
 
@@ -779,8 +786,13 @@ class ContinuityLayer:
     def _synchronize_norms_from_history(self) -> None:
         """Rebuild continuity-derived moral weights from accumulated history."""
         violation_counts: dict[str, int] = {domain: 0 for domain in NORMS}
+        # A revoked incident leaves its episodes in the history (append-only)
+        # but no longer counts toward continuity weight.
+        revoked = {ep.get("revokes") for ep in self.episodes if ep.get("verdict") == "revoked"}
         for ep in self.episodes:
             domain = ep.get("norm_domain")
+            if ep.get("episode_id") in revoked:
+                continue
             if domain in violation_counts and ep.get("verdict") == "violation":
                 violation_counts[domain] += 1
 
