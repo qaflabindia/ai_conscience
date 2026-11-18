@@ -752,7 +752,7 @@ A companion repository contains two pieces of code. Both are educational, and **
 
 # References
 
-Each entry ends with a note on what it is cited for. Bibliographic details of all published sources were checked against publisher, indexing or official records on 19 November 2026. The one item marked † could not be found in public indexes and must be confirmed before submission.
+Each entry ends with a note on what it is cited for. Bibliographic details of all published sources were checked against publisher, indexing or official records on 19 November 2026.
 
 Angelopoulos, A. N., Bates, S., Fisch, A., Lei, L., & Schuster, T. (2024). Conformal risk control. *International Conference on Learning Representations (ICLR)*. arXiv:2208.02814. — *Distribution-free control of expected loss by choosing a threshold on calibration data; a method for "risk within tolerance" (§3.3, §6.2).*
 
@@ -824,7 +824,7 @@ Saltzer, J. H., & Schroeder, M. D. (1975). The protection of information in comp
 
 Santhanam, L. (n.d.). *The AI trust framework: When should a software agent be allowed to act on its own judgement?* Unpublished manuscript. — *The decision, not the model, as the unit of trust (§1.3).*
 
-Santhanam, L. (2026a). Conscience in artificial agents: A philosophical and operational analysis. *International Journal for Multidisciplinary Research*, 8(2). † (Not found in public indexes on 19 November 2026; confirm volume, issue, pages and DOI.) — *The five-layer functional account of conscience and the hard floors (§1.3, §3.7).*
+Santhanam, L. (2026a). Conscience in artificial agents: A philosophical and operational analysis. *International Journal for Multidisciplinary Research*, 8(2), March–April 2026. Paper ID 76318. https://doi.org/10.36948/ijfmr.2026.v08i02.76318 — *The five-layer functional account of conscience and the hard floors (§1.3, §3.7).*
 
 Santhanam, L. (2026b). *AAWDS: A layered architectural framework for AI agent systems* (working paper v0.2). Unpublished. — *The ⟨E, L1–L5⟩ architecture vocabulary (§4.1, Appendix B).*
 
