@@ -4,9 +4,9 @@ A reference implementation of evidence-gated delegation for a synthetic bank-rec
 
 ## Files
 
-- `citd_reference.py`: the trust gate. It uses an in-memory SQLite database, trusted-adapter ingestion, independent-source payer attribution, ALLOW/HOLD/ESCALATE/BLOCK dispositions, idempotent atomic dispatch, and governed learning.
-- `agentic_trust_metrics.py`: inference-serving and decision metrics, including verified safe goodput.
-- `tests/`: 47 tests. These are the original 16, 18 that cover the shared contracts, conscience advice, governed learning, evidence sources and integrity checks, and 13 for evidence consumption, amount mismatches and the restriction lifecycle.
+- `citd_reference.py`: the trust gate. It uses an in-memory SQLite database, signed role credentials (`IdentityAuthority`), trusted-adapter ingestion, independent-source payer attribution, ALLOW/HOLD/ESCALATE/BLOCK dispositions, idempotent atomic dispatch, and governed learning.
+- `agentic_trust_metrics.py`: inference-serving and decision metrics, including verified safe goodput, failure and timeout counts with censored percentiles, and scope-violation counts.
+- `tests/`: 64 tests. These are the original 16; 18 for the shared contracts, conscience advice, governed learning, evidence sources and integrity checks; 13 for evidence consumption, amount mismatches and the restriction lifecycle; and 17 for evidence timing, credentials and the metric fixes.
 
 ## How it connects to the conscience engine
 
@@ -34,13 +34,18 @@ python3 citd/citd_reference.py
 python3 -m unittest discover -s citd/tests -v
 ```
 
+## Identities and evidence timing
+
+- Every caller passes a `Credential` issued by the `IdentityAuthority` the gate was built with: `CITD(identity)`. A credential is an HMAC-SHA256 tag over subject and role, so a role string, a forged tag, a relabelled credential or one from another authority is refused. Proposals carry the agent's credential as `principal`.
+- The reviewer who verifies an incident cannot also promote it, even with a controller credential under the same subject. Audit entries name the authenticated subject (`by`, `principal`, `verified_by`, `promoted_by`, `revoked_by`).
+- The gate stamps each proposal with its own clock the first time it is dispatched. Only remittances created at or before that time can attribute the payer, so evidence that arrives after a HOLD needs a new proposal (new idempotency key). Late evidence still counts as a conflict.
+
 ## Known limitations
 
-- Identities are **demo caller strings**, not authentication. `independently_verified` is a flag supplied by the caller.
+- The identity key is held in-process, so credentials show separable privileges, not production authentication. A deployment would use mTLS or tokens from an external identity provider. `independently_verified` is still an attestation flag, now from an authenticated reviewer.
+- Evidence timing uses ingestion time at the gate, not the time the bank or customer created the document. Receipts and ledger entries carry no timestamp.
 - The audit chain is local and is not anchored outside the operator's trust domain.
-- P1, P3, P5 and P6 from the review are fixed (`paper_review/REFERENCE_CODE_REVIEW.md` §4.2). Still open:
-  - P2: evidence timing is not checked.
-  - P9–P11: metric blind spots in `agentic_trust_metrics.py`.
+- All eleven probe defects (P1–P11) in `paper_review/REFERENCE_CODE_REVIEW.md` are now closed (§4.1–§4.3).
 - Revoking an incident subtracts the weight increase it caused. If other norm updates happened in between, the restored weight is an approximation, clamped at the engine's floor.
 - Queued corrections are listed, not acted on. Reversing a clearance is left to a human workflow.
 - The code shows that some safeguards are mechanically feasible. It does not show artificial conscience, certified trustworthiness or any measured reduction in real-world errors.

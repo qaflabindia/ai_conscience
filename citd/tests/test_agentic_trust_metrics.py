@@ -37,7 +37,44 @@ class TestInferenceTelemetry(unittest.TestCase):
         with self.assertRaises(ValueError):
             InferenceTrace('wrong',10.0,(9.0,),10)
 
+    def test_one_token_response_can_meet_goodput(self):
+        # P9: TPOT is undefined, so TTFT and E2E decide.
+        m=inference_metrics([InferenceTrace('one',0,(.1,),5)],1,InferenceSLO(.2,.05,.5))
+        self.assertEqual(m['good_count'],1)
+
+    def test_one_token_response_still_needs_latency_slos(self):
+        m=inference_metrics([InferenceTrace('one',0,(.9,),5)],1,InferenceSLO(.2,.05,.5))
+        self.assertEqual(m['good_count'],0)
+
+    def test_failures_are_counted_and_censored(self):
+        # P10: a timeout must not vanish from the tail.
+        ok=[InferenceTrace(f'ok{i}',0,(.1,),5) for i in range(9)]
+        bad=InferenceTrace('t',0,(),5,success=False)
+        m=inference_metrics(ok+[bad],1,InferenceSLO(.2,.05,.5),timeout_seconds=30)
+        self.assertEqual(m['failed'],1)
+        self.assertAlmostEqual(m['failure_rate'],.1)
+        self.assertAlmostEqual(m['e2e_p99_s'],.1)
+        self.assertEqual(m['percentile_population'],'completed_only')
+        self.assertEqual(m['e2e_p99_s_censored'],30)
+        self.assertEqual(m['ttft_p99_s_censored'],30)
+
+    def test_censored_percentiles_need_a_declared_timeout(self):
+        m=inference_metrics([InferenceTrace('t',0,(),5,success=False)],1,InferenceSLO(.2,.05,.5))
+        self.assertEqual(m['failed'],1)
+        self.assertIsNone(m['e2e_p99_s_censored'])
+
 class TestTrustTelemetry(unittest.TestCase):
+    def test_ineligible_autonomous_commit_is_a_scope_violation(self):
+        # P11: the most safety-relevant event must never be dropped.
+        xs=[ActionOutcome('ok', True, True,'correct',True,True,True,True,True),
+            ActionOutcome('rogue', False, True,'correct',True,True,True,True,True)]
+        x=decision_metrics(xs,10)
+        self.assertEqual(x['scope_violations'],1)
+        self.assertEqual(x['scope_violation_case_ids'],['rogue'])
+        self.assertEqual(x['total_autonomous_commits'],2)
+        self.assertEqual(x['auto_commits'],1)
+        self.assertEqual(x['verified_safe_count'],1)
+
     def test_pending_not_scored_correct(self):
         xs=[ActionOutcome('a', True, True,'correct',True,True,True,True,True),
             ActionOutcome('b', True, True,'pending',True,True,True,True,True),

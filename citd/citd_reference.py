@@ -12,13 +12,19 @@ Shared vocabulary (dispositions, norm domains, learning modes, audit format)
 comes from conscience_research/trust_contracts.py, so this gate and the
 conscience service speak one language.
 
+Identities are HMAC-signed credentials issued by an IdentityAuthority, so a
+caller cannot claim a role by passing a string. The key lives in the same
+process, so this shows separable privileges, not production authentication.
+
 It does not demonstrate phenomenal or moral conscience, or authenticate real bank systems.
 """
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import os
+import secrets
 import sqlite3
 import sys
 from dataclasses import asdict, dataclass, field
@@ -43,6 +49,55 @@ from trust_contracts import (  # noqa: E402
 # derived sources (copies or agent output) are kept for lineage but never count.
 INDEPENDENT_SOURCES = frozenset({"customer_remittance", "bank_remittance_advice"})
 DERIVED_SOURCES = frozenset({"agent_extracted", "ledger_copy"})
+
+
+# ── Identity (P4): roles are proven by a signed credential, not a string ────
+
+ROLES = frozenset({
+    "bank_adapter", "ledger_adapter", "remittance_adapter",  # trusted ingestion
+    "finance_agent",                                         # proposes, never decides
+    "independent_reviewer",                                  # adjudicates incidents
+    "finance_controller",                                    # promotes / revokes restrictions
+})
+
+
+@dataclass(frozen=True)
+class Credential:
+    subject: str
+    role: str
+    tag: str = field(repr=False)
+
+
+class IdentityAuthority:
+    """Issues and verifies role credentials (HMAC-SHA256 over subject and role).
+
+    Holding one credential does not let a caller mint another: that needs the
+    authority's key. In this reference the key is in-process; a deployment
+    would use mTLS or signed tokens from an external identity provider.
+    """
+
+    def __init__(self, key: Optional[bytes] = None):
+        self._key = key or secrets.token_bytes(32)
+
+    def _tag(self, subject: str, role: str) -> str:
+        return hmac.new(self._key, f"{subject}\x1f{role}".encode(), hashlib.sha256).hexdigest()
+
+    def issue(self, subject: str, role: str) -> Credential:
+        if role not in ROLES:
+            raise ValueError(f"Unknown role: {role}")
+        if not subject:
+            raise ValueError("A credential needs a subject")
+        return Credential(subject, role, self._tag(subject, role))
+
+    def is_valid(self, cred: Any, role: str) -> bool:
+        return (isinstance(cred, Credential) and cred.role == role
+                and hmac.compare_digest(cred.tag, self._tag(cred.subject, cred.role)))
+
+    def require(self, cred: Any, role: str, message: str) -> str:
+        """Return the credential's subject, or raise PermissionError."""
+        if not self.is_valid(cred, role):
+            raise PermissionError(message)
+        return cred.subject
 
 
 def now() -> str:
@@ -74,7 +129,7 @@ class Proposal:
     case_id: str
     receipt_id: str
     ledger_id: str
-    principal: str = "finance_agent"
+    principal: Optional[Credential] = None   # must be a valid finance_agent credential
     action: str = "CLEAR_RECEIPT"
     idempotency_key: str = ""
     # The agent's own normative self-assessment (domain -> 0..1). Advisory only:
@@ -99,8 +154,13 @@ class CITD:
     MAX_AUTO_AMOUNT = 100_000
     POLICY_VERSION = "finance-recon-v1"
 
-    def __init__(self, database: str = ":memory:", advisor: Any = "default"):
-        """advisor: "default" uses the conscience engine; None disables advice."""
+    def __init__(self, identity: IdentityAuthority, database: str = ":memory:",
+                 advisor: Any = "default"):
+        """identity verifies every caller. advisor: "default" uses the conscience
+        engine; None disables advice."""
+        if not isinstance(identity, IdentityAuthority):
+            raise TypeError("CITD needs an IdentityAuthority")
+        self.identity = identity
         if advisor == "default":
             from advisor import ConscienceAdvisor  # conscience_research/advisor.py
             advisor = ConscienceAdvisor()
@@ -123,6 +183,10 @@ class CITD:
             customer TEXT NOT NULL, source TEXT NOT NULL,
             created_at TEXT NOT NULL, original_hash TEXT NOT NULL,
             consumed_by_receipt TEXT);
+        CREATE TABLE IF NOT EXISTS proposals (       -- gate-stamped submission time (P2)
+            idempotency_key TEXT PRIMARY KEY, case_id TEXT NOT NULL,
+            receipt_id TEXT NOT NULL, ledger_id TEXT NOT NULL,
+            principal TEXT NOT NULL, registered_at TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS completed (
             idempotency_key TEXT PRIMARY KEY, receipt_id TEXT NOT NULL,
             ledger_id TEXT NOT NULL, committed_at TEXT NOT NULL);
@@ -146,9 +210,9 @@ class CITD:
     # ── Ingestion (trusted adapters only) ────────────────────────────────────
 
     def ingest_receipt(self, receipt_id: str, amount: int, bank_ref: str,
-                       feed: str, *, caller: str, importer_version: str = "v1") -> None:
-        if caller != "bank_adapter":
-            raise PermissionError("Only authenticated bank adapter may ingest receipts")
+                       feed: str, *, caller: Credential, importer_version: str = "v1") -> None:
+        source_id = self.identity.require(caller, "bank_adapter",
+                                          "Only authenticated bank adapter may ingest receipts")
         if amount <= 0:
             raise ValueError("Amount must be positive minor currency units")
         row = {"receipt_id": receipt_id, "amount": amount, "bank_ref": bank_ref,
@@ -157,21 +221,22 @@ class CITD:
                         (receipt_id, amount, bank_ref, feed, importer_version, digest(row)))
         self.db.execute("INSERT OR IGNORE INTO feed_controls(feed) VALUES(?)", (feed,))
         self.audit.append("RECEIPT_INGESTED", {"receipt_id": receipt_id, "feed": feed,
-                                               "importer_version": importer_version})
+                                               "importer_version": importer_version,
+                                               "by": source_id})
 
     def ingest_ledger(self, ledger_id: str, customer: str, amount: int,
-                      *, caller: str) -> None:
-        if caller != "ledger_adapter":
-            raise PermissionError("Only ledger adapter may ingest ledger entries")
+                      *, caller: Credential) -> None:
+        source_id = self.identity.require(caller, "ledger_adapter",
+                                          "Only ledger adapter may ingest ledger entries")
         row = {"ledger_id": ledger_id, "customer": customer, "amount": amount}
         self.db.execute("INSERT INTO ledger VALUES(?,?,?,NULL,?)",
                         (ledger_id, customer, amount, digest(row)))
-        self.audit.append("LEDGER_INGESTED", {"ledger_id": ledger_id})
+        self.audit.append("LEDGER_INGESTED", {"ledger_id": ledger_id, "by": source_id})
 
     def ingest_remittance(self, remit_id: str, bank_ref: str, customer: str,
-                          *, caller: str, source: str = "customer_remittance") -> None:
-        if caller != "remittance_adapter":
-            raise PermissionError("Authenticated remittance adapter required")
+                          *, caller: Credential, source: str = "customer_remittance") -> None:
+        source_id = self.identity.require(caller, "remittance_adapter",
+                                          "Authenticated remittance adapter required")
         if source not in INDEPENDENT_SOURCES | DERIVED_SOURCES:
             raise ValueError(f"Unknown remittance source: {source}")
         row = {"remit_id": remit_id, "bank_ref": bank_ref, "customer": customer, "source": source}
@@ -179,7 +244,7 @@ class CITD:
                         (remit_id, bank_ref, customer, source, now(), digest(row)))
         self.audit.append("REMITTANCE_INGESTED", {
             "remit_id": remit_id, "source": source,
-            "independent": source in INDEPENDENT_SOURCES})
+            "independent": source in INDEPENDENT_SOURCES, "by": source_id})
 
     # ── Integrity checks (stored hashes are verified, not decorative) ───────
 
@@ -202,10 +267,14 @@ class CITD:
 
     # ── Decision ─────────────────────────────────────────────────────────────
 
-    def _gate(self, p: Proposal) -> tuple[Disposition, str, tuple[str, ...], bool]:
-        """Deterministic gate. Returns (disposition, reason, norm domains, authorised)."""
+    def _gate(self, p: Proposal, as_of: str) -> tuple[Disposition, str, tuple[str, ...], bool]:
+        """Deterministic gate. Returns (disposition, reason, norm domains, authorised).
+
+        as_of is when the gate first registered the proposal: attributing
+        evidence must predate it (paper v2 §5.2, "every chain must predate").
+        """
         D = Disposition
-        if p.principal != "finance_agent" or p.action != "CLEAR_RECEIPT":
+        if p.action != "CLEAR_RECEIPT" or not self.identity.is_valid(p.principal, "finance_agent"):
             return D.BLOCK, "Action or principal outside delegated authority", ("authority",), False
         if not p.idempotency_key:
             return D.BLOCK, "Idempotency key required", ("honesty", "authority"), True
@@ -252,9 +321,15 @@ class CITD:
             if r["source"] in INDEPENDENT_SOURCES]
         if any(digest(_remittance_fields(r)) != r["original_hash"] for r in independent):
             return D.HOLD, "Evidence integrity check failed", ("honesty",), True
-        matches = [r for r in independent if r["customer"] == ledger["customer"]]
+        # Late evidence still counts as a conflict (stricter), but only evidence
+        # that existed when the proposal was made can attribute the payer.
         competing = {r["customer"] for r in independent}
-        if len(matches) != 1 or len(competing) != 1:
+        matches = [r for r in independent if r["customer"] == ledger["customer"]]
+        timely = [r for r in matches if r["created_at"] <= as_of]
+        if len(competing) == 1 and len(matches) == 1 and not timely:
+            return (D.HOLD, "Attributing evidence postdates the proposal; submit a new proposal",
+                    ("honesty",), True)
+        if len(timely) != 1 or len(competing) != 1:
             return (D.HOLD, "Independent unique payer attribution not established",
                     ("honesty", "harm", "fairness"), True)
         return D.ALLOW, "Independent remittance uniquely identifies the payer", ("honesty", "authority"), True
@@ -268,16 +343,27 @@ class CITD:
             (feed, importer_version, now())).fetchone()
         return row["incident_id"] if row else None
 
-    def _matching_remittance(self, receipt_id: str, ledger_id: str) -> Any:
+    def _matching_remittance(self, receipt_id: str, ledger_id: str, as_of: str) -> Any:
         receipt = self.db.execute("SELECT * FROM receipts WHERE receipt_id=?", (receipt_id,)).fetchone()
         ledger = self.db.execute("SELECT * FROM ledger WHERE ledger_id=?", (ledger_id,)).fetchone()
         rows = [r for r in self.db.execute(
-            "SELECT * FROM remittances WHERE bank_ref=? AND customer=? AND consumed_by_receipt IS NULL",
-            (receipt["bank_ref"], ledger["customer"])) if r["source"] in INDEPENDENT_SOURCES]
+            "SELECT * FROM remittances WHERE bank_ref=? AND customer=? AND consumed_by_receipt IS NULL "
+            "AND created_at <= ?",
+            (receipt["bank_ref"], ledger["customer"], as_of)) if r["source"] in INDEPENDENT_SOURCES]
         return rows[0] if len(rows) == 1 else None
 
+    def _registered_at(self, p: Proposal) -> Optional[str]:
+        row = self.db.execute("SELECT registered_at FROM proposals WHERE idempotency_key=?",
+                              (p.idempotency_key,)).fetchone()
+        return row["registered_at"] if row else None
+
     def evaluate(self, p: Proposal) -> Verdict:
-        disposition, reason, domains, authorised = self._gate(p)
+        """Dry run. An unregistered proposal is judged as if submitted now."""
+        as_of = (self._registered_at(p) if p.idempotency_key else None) or now()
+        return self._evaluate(p, as_of)
+
+    def _evaluate(self, p: Proposal, as_of: str) -> Verdict:
+        disposition, reason, domains, authorised = self._gate(p, as_of)
         domains = validate_norms(domains)
         advisory: Optional[dict[str, Any]] = None
 
@@ -315,9 +401,28 @@ class CITD:
                     outcome = Verdict(DISPATCH_REPLAY, True, "Idempotent replay, no second write",
                                       (), self.POLICY_VERSION)
             else:
-                outcome = self.evaluate(p)  # re-evaluate inside the transaction
+                registered = self.db.execute(
+                    "SELECT * FROM proposals WHERE idempotency_key=?",
+                    (p.idempotency_key,)).fetchone() if p.idempotency_key else None
+                if registered and (registered["receipt_id"] != p.receipt_id
+                                   or registered["ledger_id"] != p.ledger_id):
+                    outcome = Verdict(Disposition.BLOCK.value, False,
+                                      "Idempotency key reused for different action",
+                                      ("honesty", "authority"), self.POLICY_VERSION)
+                    as_of = None
+                else:
+                    if registered:
+                        as_of = registered["registered_at"]
+                    else:
+                        as_of = now()
+                        if p.idempotency_key and self.identity.is_valid(p.principal, "finance_agent"):
+                            # The gate's clock stamps the proposal; the agent cannot backdate it.
+                            self.db.execute("INSERT INTO proposals VALUES(?,?,?,?,?,?)",
+                                            (p.idempotency_key, p.case_id, p.receipt_id,
+                                             p.ledger_id, p.principal.subject, as_of))
+                    outcome = self._evaluate(p, as_of)  # re-evaluate inside the transaction
                 if outcome.allowed:
-                    remittance = self._matching_remittance(p.receipt_id, p.ledger_id)
+                    remittance = self._matching_remittance(p.receipt_id, p.ledger_id, as_of)
                     if remittance is None:
                         raise RuntimeError("Attribution evidence changed during dispatch")
                     consumed = self.db.execute(
@@ -338,6 +443,7 @@ class CITD:
                                     (p.idempotency_key, p.receipt_id, p.ledger_id, now()))
             self.audit.append("DISPATCH", {
                 "case_id": p.case_id, "receipt_id": p.receipt_id, "ledger_id": p.ledger_id,
+                "principal": p.principal.subject if isinstance(p.principal, Credential) else None,
                 "disposition": outcome.disposition,
                 "norm_domains": list(outcome.normative_domains),
                 "advisory": outcome.advisory,
@@ -350,7 +456,7 @@ class CITD:
 
     # ── Governed learning ───────────────────────────────────────────────────
 
-    def propose_learning(self, incident_id: str, feed: str, *, actor: str,
+    def propose_learning(self, incident_id: str, feed: str, *, actor: Credential,
                          independently_verified: bool,
                          norm_domains: tuple[str, ...],
                          importer_version: Optional[str] = None,
@@ -361,8 +467,10 @@ class CITD:
         importer version (None: the whole feed). expires_at is an ISO-8601 UTC
         time after which the restriction lapses (None: until revoked).
         """
-        # A self-critique is not ground truth. Only a reviewer can attest to an incident.
-        if actor != "independent_reviewer" or not independently_verified:
+        # A self-critique is not ground truth. Only an authenticated reviewer can attest.
+        reviewer = self.identity.require(actor, "independent_reviewer",
+                                         "Independent incident adjudication required")
+        if not independently_verified:
             raise PermissionError("Independent incident adjudication required")
         domains = validate_norms(norm_domains)
         if not domains:
@@ -376,23 +484,23 @@ class CITD:
         self.db.execute(
             "INSERT INTO learning_proposals(incident_id, feed, importer_version, norm_domains, "
             "verified_by, change_summary, expires_at) VALUES(?,?,?,?,?,?,?)",
-            (incident_id, feed, importer_version, json.dumps(list(domains)), actor,
+            (incident_id, feed, importer_version, json.dumps(list(domains)), reviewer,
              f"Suspend automatic clearance on {scope}; raise implicated norm weights",
              expires_at))
         self.audit.append("LEARNING_PROPOSED", {
             "incident_id": incident_id, "feed": feed, "importer_version": importer_version,
-            "expires_at": expires_at, "norm_domains": list(domains),
+            "expires_at": expires_at, "norm_domains": list(domains), "verified_by": reviewer,
             "learning_mode": LearningMode.GOVERNED.value})
 
-    def promote_learning(self, incident_id: str, *, actor: str) -> dict[str, Any]:
+    def promote_learning(self, incident_id: str, *, actor: Credential) -> dict[str, Any]:
         """Promote a verified incident.
 
         In one transaction: activate the restriction and queue every earlier
         clearance in its scope for correction (the reverse path). Then apply
         the normative update through the conscience advisor.
         """
-        if actor != "finance_controller":
-            raise PermissionError("Only delegated controller can promote a new restriction")
+        controller = self.identity.require(
+            actor, "finance_controller", "Only delegated controller can promote a new restriction")
         self.db.execute("BEGIN IMMEDIATE")
         try:
             row = self.db.execute(
@@ -400,6 +508,8 @@ class CITD:
                 (incident_id,)).fetchone()
             if not row:
                 raise ValueError("No pending verified incident")
+            if row["verified_by"] == controller:
+                raise PermissionError("The reviewer who verified an incident cannot also promote it")
             domains = validate_norms(json.loads(row["norm_domains"]))
             self.db.execute("UPDATE learning_proposals SET status='PROMOTED' WHERE incident_id=?",
                             (incident_id,))
@@ -420,6 +530,7 @@ class CITD:
                 "incident_id": incident_id, "feed": row["feed"],
                 "importer_version": row["importer_version"], "expires_at": row["expires_at"],
                 "norm_domains": list(domains), "corrections_queued": corrections,
+                "promoted_by": controller,
                 "learning_mode": LearningMode.GOVERNED.value})
             self.db.execute("COMMIT")
         except Exception:
@@ -448,15 +559,15 @@ class CITD:
         result["normative_update"] = update
         return result
 
-    def revoke_learning(self, incident_id: str, *, actor: str, reason: str) -> dict[str, Any]:
+    def revoke_learning(self, incident_id: str, *, actor: Credential, reason: str) -> dict[str, Any]:
         """Lift a promoted restriction and reverse its normative update.
 
         The adjudication history stays in the audit chain (irreversible logs);
         only the operational restriction is reversed (reversible decisions).
         Queued corrections stay open: they concern clearances already made.
         """
-        if actor != "finance_controller":
-            raise PermissionError("Only delegated controller can revoke a restriction")
+        controller = self.identity.require(
+            actor, "finance_controller", "Only delegated controller can revoke a restriction")
         if not reason.strip():
             raise ValueError("A revocation needs a recorded reason")
         self.db.execute("BEGIN IMMEDIATE")
@@ -470,6 +581,7 @@ class CITD:
                             (incident_id,))
             self.audit.append("LEARNING_REVOKED", {
                 "incident_id": incident_id, "feed": row["feed"], "reason": reason,
+                "revoked_by": controller,
                 "learning_mode": LearningMode.GOVERNED.value})
             self.db.execute("COMMIT")
         except Exception:
@@ -493,26 +605,39 @@ class CITD:
 
 
 def demo() -> None:
-    app = CITD()
-    app.ingest_receipt("B-778", 50_000, "R-778", "bank_feed_1", caller="bank_adapter")
-    app.ingest_ledger("L-101", "CUSTOMER_A", 50_000, caller="ledger_adapter")
-    app.ingest_ledger("L-102", "CUSTOMER_B", 50_000, caller="ledger_adapter")
-    proposal = Proposal("recon-001", "B-778", "L-102", idempotency_key="clear-001")
+    identity = IdentityAuthority()
+    bank = identity.issue("bank-sftp-1", "bank_adapter")
+    ledger = identity.issue("erp-gl", "ledger_adapter")
+    remit = identity.issue("remittance-inbox", "remittance_adapter")
+    agent = identity.issue("recon-agent-7", "finance_agent")
+    reviewer = identity.issue("internal-audit-2", "independent_reviewer")
+    controller = identity.issue("finance-controller-1", "finance_controller")
+
+    app = CITD(identity)
+    app.ingest_receipt("B-778", 50_000, "R-778", "bank_feed_1", caller=bank)
+    app.ingest_ledger("L-101", "CUSTOMER_A", 50_000, caller=ledger)
+    app.ingest_ledger("L-102", "CUSTOMER_B", 50_000, caller=ledger)
+    proposal = Proposal("recon-001", "B-778", "L-102", principal=agent, idempotency_key="clear-001")
     print("Ambiguous:", app.dispatch(proposal).json())
-    app.ingest_remittance("M-902", "R-778", "CUSTOMER_B", caller="remittance_adapter")
-    print("With independent evidence:", app.dispatch(proposal).json())
-    print("Repeated request:", app.dispatch(proposal).json())
-    app.propose_learning("incident-22", "bank_feed_1", actor="independent_reviewer",
+    app.ingest_remittance("M-902", "R-778", "CUSTOMER_B", caller=remit)
+    print("Same proposal, evidence arrived later:", app.dispatch(proposal).json())
+    fresh = Proposal("recon-001", "B-778", "L-102", principal=agent, idempotency_key="clear-001b")
+    print("New proposal after the evidence:", app.dispatch(fresh).json())
+    print("Repeated request:", app.dispatch(fresh).json())
+    forged = Proposal("recon-x", "B-778", "L-101", idempotency_key="forged",
+                      principal=Credential("recon-agent-7", "finance_agent", "0" * 64))
+    print("Forged principal:", app.evaluate(forged).disposition)
+    app.propose_learning("incident-22", "bank_feed_1", actor=reviewer,
                          independently_verified=True, norm_domains=("honesty", "harm"))
-    update = app.promote_learning("incident-22", actor="finance_controller")
+    update = app.promote_learning("incident-22", actor=controller)
     print("Governed learning applied:", json.dumps(update, indent=2))
     print("Clearances queued for correction:", app.open_corrections("incident-22"))
-    app.ingest_receipt("B-779", 10_000, "R-779", "bank_feed_1", caller="bank_adapter")
-    app.ingest_ledger("L-103", "CUSTOMER_C", 10_000, caller="ledger_adapter")
-    app.ingest_remittance("M-903", "R-779", "CUSTOMER_C", caller="remittance_adapter")
-    later = Proposal("recon-002", "B-779", "L-103", idempotency_key="clear-002")
+    app.ingest_receipt("B-779", 10_000, "R-779", "bank_feed_1", caller=bank)
+    app.ingest_ledger("L-103", "CUSTOMER_C", 10_000, caller=ledger)
+    app.ingest_remittance("M-903", "R-779", "CUSTOMER_C", caller=remit)
+    later = Proposal("recon-002", "B-779", "L-103", principal=agent, idempotency_key="clear-002")
     print("While restricted:", app.dispatch(later).json())
-    revoked = app.revoke_learning("incident-22", actor="finance_controller",
+    revoked = app.revoke_learning("incident-22", actor=controller,
                                   reason="Root cause fixed in importer v2; replayed clean")
     print("Restriction revoked:", json.dumps(revoked, indent=2))
     print("After revocation:", app.dispatch(later).json())
