@@ -271,7 +271,7 @@ class CITD:
         """Deterministic gate. Returns (disposition, reason, norm domains, authorised).
 
         as_of is when the gate first registered the proposal: attributing
-        evidence must predate it (paper v2 §5.2, "every chain must predate").
+        evidence must predate it (paper v2 §6.2, "every chain must predate").
         """
         D = Disposition
         if p.action != "CLEAR_RECEIPT" or not self.identity.is_valid(p.principal, "finance_agent"):

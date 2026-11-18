@@ -51,16 +51,16 @@ Other problems found by reading the code:
 
 | Paper element | In the reference code? |
 |---|---|
-| Agent is not the execution authority (v1 §4.1, v2 §5.1) | **Yes** (modulo P4) |
+| Agent is not the execution authority (v1 §4.1, v2 §6.1) | **Yes** (modulo P4) |
 | Disposition set | ALLOW, HOLD, ESCALATE, BLOCK yes. **MODIFY is never produced.** `ALREADY_COMMITTED` exists but is not in the paper's vocabulary. |
 | Self-judgment J and independent challenger (v1 §6.2 pseudocode) | **Absent.** There is no agent, LLM, self-judgment or challenger. `normative_domains` are hard-coded labels per branch. |
 | NSM, NPG and BUM conscience layers | **Absent.** "Learning" means feed suspension, not norm revision. That fits v2 (§5.4), but means v1's "conscience-informed" claim has no code behind it. |
 | Single-use authorisation token, signed policy, 60 s expiry (v1 pseudocode) | **Absent.** `policy_version` is a constant `finance-recon-v1`, while the paper's JSON example says `finance-recon-v3`. |
 | §6.3 response fields (`dominant_issue`, `required_evidence`, `escalation_owner`, `binding_update_applied`) | **Absent.** `Verdict` has only disposition, allowed, reason, domains and version. |
-| EvidenceSufficient as uniqueness (v2 §5.2) | Partial. Uniqueness is checked over customers but not over evidence consumption (P1) or timing (P2). |
-| RiskWithinTolerance (v2 §5.2) | A per-transaction amount cap only. **No stratum UCB and no aggregate exposure limit per root cause.** |
+| EvidenceSufficient as uniqueness (v2 §6.2) | Partial. Uniqueness is checked over customers but not over evidence consumption (P1) or timing (P2). |
+| RiskWithinTolerance (v2 §6.2) | A per-transaction amount cap only. **No stratum UCB and no aggregate exposure limit per root cause.** |
 | Shared-cause containment and reverse path (v1 §7.3) | Future suspension only (P6). |
-| VSG (v1 §9.4, v2 §8) | Rate only. **No yield**, so the rate goes up with volume (review M8). |
+| VSG (v1 §9.4, v2 §9) | Rate only. **No yield**, so the rate goes up with volume (review M8). |
 | "Not presently determinable" adjudication label (v1 §8.1) | **Missing.** Only correct, incorrect and pending exist. |
 | Nine inference metrics (v1 §9.1) | About 7 of 9 are computable. ITL and TPOT percentiles are not reported. This part is **low relevance** to the trust thesis, consistent with the review's advice to compress §9.1. |
 
@@ -116,7 +116,7 @@ P7 and P8 were closed in §4.1 (stored hashes are verified, ledger ingestion is 
 
 ### 4.3 Remaining defects P2, P4, P9, P10, P11 resolved (19 Nov 2026)
 
-- **P2, evidence timing.** The gate stamps each proposal with its own clock the first time it is dispatched (`proposals.registered_at`; the agent cannot supply or backdate it). Only independent remittances created at or before that time can attribute the payer, matching paper v2 §5.2 ("every chain must also predate the proposal") and §6.2. Re-dispatching a held proposal after evidence arrives returns HOLD ("Attributing evidence postdates the proposal; submit a new proposal"); a new proposal is then allowed. Late evidence still counts as a conflict. A registered idempotency key cannot be retargeted to a different receipt or ledger entry. Timing is ingestion time at the gate, not the document's own creation time.
+- **P2, evidence timing.** The gate stamps each proposal with its own clock the first time it is dispatched (`proposals.registered_at`; the agent cannot supply or backdate it). Only independent remittances created at or before that time can attribute the payer, matching paper v2 §6.2 ("every chain must also predate the proposal") and §7. Re-dispatching a held proposal after evidence arrives returns HOLD ("Attributing evidence postdates the proposal; submit a new proposal"); a new proposal is then allowed. Late evidence still counts as a conflict. A registered idempotency key cannot be retargeted to a different receipt or ledger entry. Timing is ingestion time at the gate, not the document's own creation time.
 - **P4, identities.** `IdentityAuthority` issues HMAC-SHA256 `Credential`s for six roles, and `CITD(identity)` requires one. Every ingestion `caller`, learning `actor` and proposal `principal` is verified: a role string, a forged tag, a relabelled credential or one from another authority is refused. The reviewer who verified an incident cannot promote it under a controller credential for the same subject. Audit entries record the authenticated subject. The key is in-process, so this demonstrates separable privileges, not production authentication.
 - **P9, one-token responses.** Goodput treats TPOT as undefined for a one-token response, so it meets the SLO on TTFT and E2E alone.
 - **P10, failures in percentiles.** `inference_metrics` reports `failed` and `failure_rate`, labels the existing percentiles `completed_only`, and, given `timeout_seconds`, adds `ttft_p99_s_censored` and `e2e_p99_s_censored` with failures counted at the timeout value. The probe case (nine fast successes, one 30 s timeout) now reports a censored P99 of 30 s alongside the 0.1 s completed-only figure.

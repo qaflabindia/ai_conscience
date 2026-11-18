@@ -209,4 +209,4 @@ ASDGF's conformance profiles target swarms, and a single agent with a checker is
 - ASDGF names TAGOF v1.4 and AAWDF v0.2 as companions. The CITD paper should name all three so that the family reads as one programme: AAWDS (design) → CITD (action-boundary governance) → ASDGF (multi-agent extension) → TAGOF (enterprise operating model).
 - AAWDS calls the stack AAWDS, while ASDGF calls it "AAWDF-2026". Use one name.
 
-All of the above is applied in [`Agentic_AI_Trust_and_Conscience_v2.md`](Agentic_AI_Trust_and_Conscience_v2.md), §3 and §4.
+All of the above is applied in [`Agentic_AI_Trust_and_Conscience_v2.md`](Agentic_AI_Trust_and_Conscience_v2.md), §4 and §5.
