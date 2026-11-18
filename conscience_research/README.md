@@ -181,8 +181,9 @@ achievable but requires implementing all conscience components correctly.
 
 This project operationalises the conscience architecture from:
 
-> *Conscience in Artificial Agents — A Philosophical and Operational Analysis*
-> April 2026
+> Santhanam, L. (2026). *Conscience in Artificial Agents — A Philosophical and Operational Analysis*.
+> *International Journal for Multidisciplinary Research*, 8(2), March–April 2026.
+> https://doi.org/10.36948/ijfmr.2026.v08i02.76318
 
 The whitepaper concludes that current agents are **alignment mechanisms**,
 not conscience-bearing entities:

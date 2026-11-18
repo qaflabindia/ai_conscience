@@ -149,6 +149,8 @@ No code reads the table: HF1–HF4 are enforced by `check_hard_floors()` in `age
 
 ## 7. Suggested references to add (verify each DOI or arXiv ID before use)
 
+**Status (19 Nov 2026).** Every reference in the standalone v2 paper has been checked against publisher, indexing or official records. Ref [2] (finding F10) is now cited as Santhanam (2026a), *IJFMR* 8(2), March–April 2026, https://doi.org/10.36948/ijfmr.2026.v08i02.76318. The details come from the publisher's notices, and the DOI resolves to the paper's page. F10's indexing caveat still applies: v2 uses the paper as background for the five-layer account, not as evidence.
+
 - Huang, J., et al. (2024). Large language models cannot self-correct reasoning yet. *ICLR 2024*. arXiv:2310.01798
 - Debenedetti, E., et al. (2024). AgentDojo: A dynamic environment to evaluate prompt injection attacks and defenses for LLM agents. *NeurIPS 2024 D&B*. arXiv:2406.13352
 - Debenedetti, E., et al. (2025). Defeating prompt injections by design (CaMeL). arXiv:2503.18813
