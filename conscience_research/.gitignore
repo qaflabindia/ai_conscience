@@ -10,3 +10,6 @@ norms.json
 *.p12
 .env
 .env.*
+
+# Shared hash-chained decision audit (trust_contracts.JsonlAudit)
+decision_audit.jsonl

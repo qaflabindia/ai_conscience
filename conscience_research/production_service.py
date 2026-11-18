@@ -23,11 +23,29 @@ from urllib.parse import parse_qs, urlparse
 import anthropic
 import agent as conscience
 import mimetypes
+from trust_contracts import (
+    Disposition,
+    JsonlAudit,
+    LearningMode,
+    disposition_from_conscience,
+    validate_norms,
+)
+
+_audit: JsonlAudit | None = None
+
+
+def get_audit() -> JsonlAudit:
+    """Decision audit trail, in the shared hash-chained format."""
+    global _audit
+    path = os.getenv("CONSCIENCE_AUDIT_FILE", "decision_audit.jsonl")
+    if _audit is None or _audit.path != path:
+        _audit = JsonlAudit(path)
+    return _audit
 
 SERVICE_NAME = "conscience-research-prod"
 SERVICE_VERSION = "1.1.0-secure"
 
-_state_lock = threading.Lock()
+_state_lock = conscience.STATE_LOCK  # shared with advisor.py
 
 _LOOPBACK_ADDRESSES = {"127.0.0.1", "::1", "localhost"}
 
@@ -225,6 +243,29 @@ def decision_payload(
                 )
 
     after = copy.deepcopy(conscience.NORMS.get(primary_domain, {})) if primary_domain else {}
+    # Recording a violating episode also binds (ContinuityLayer.record), so
+    # report any actual change of normative state, not just the explicit flag.
+    mutated = mutated or before != after
+
+    disposition = disposition_from_conscience(verdict)
+    norms_triggered = validate_norms(dict.fromkeys(violated_domains))
+
+    audit_payload = {
+        "action": action,
+        "disposition": disposition.value,
+        "norm_domains": list(norms_triggered),
+        "hard_floors": hard_floors,
+        "dry_run": dry_run,
+        "mutated": mutated,
+    }
+    if mutated:
+        # Direct adaptation through this API is research-mode learning, not
+        # the governed promotion path that the CITD gate uses.
+        audit_payload["learning_mode"] = LearningMode.RESEARCH.value
+        audit_payload["norm_domain"] = primary_domain
+        audit_payload["weight_before"] = before.get("weight")
+        audit_payload["weight_after"] = after.get("weight")
+    get_audit().append("GUARDRAIL_DECISION", audit_payload)
 
     response = {
         "service": SERVICE_NAME,
@@ -232,8 +273,9 @@ def decision_payload(
         "evaluated_at": _now_iso(),
         "decision": {
             "action": action,
+            "disposition": disposition.value,
             "verdict": verdict,
-            "allowed": verdict == "compliant",
+            "allowed": disposition is Disposition.ALLOW,
             "norm_domain": primary_domain,
             "violated_domains": violated_domains,
             "hard_floors": hard_floors,
@@ -465,6 +507,15 @@ class ConscienceRequestHandler(BaseHTTPRequestHandler):
 
         if path == "/v1/norms":
             self._write_json(HTTPStatus.OK, norms_payload())
+            return
+
+        if path == "/v1/audit/verify":
+            audit = get_audit()
+            ok, bad_seq = audit.verify()
+            self._write_json(
+                HTTPStatus.OK,
+                {"intact": ok, "first_bad_seq": bad_seq, "records": len(audit.records())},
+            )
             return
 
         if path == "/v1/episodes":

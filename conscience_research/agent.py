@@ -23,7 +23,11 @@ import os
 import sys
 import time
 from typing import Optional, Any
-from threading import Lock
+from threading import Lock, RLock
+
+# One lock for all reads and writes of the shared normative state (NORMS and
+# the continuity layer), used by production_service.py and advisor.py alike.
+STATE_LOCK = RLock()
 from cryptography.fernet import Fernet
 
 import scenarios as scenarios_module

@@ -290,6 +290,55 @@ class HttpEndpointTests(unittest.TestCase):
         self.assertEqual(self._call("POST", "/v1/guardrail/decision", mutate, token="test-token"), 200)
 
 
+class SharedContractServiceTests(unittest.TestCase):
+    """The service speaks the shared vocabulary and writes the shared audit."""
+
+    def setUp(self) -> None:
+        _reset_norms()
+        self.audit_path = os.path.join(_WORK_DIR, f"audit_{self._testMethodName}.jsonl")
+        os.environ["CONSCIENCE_AUDIT_FILE"] = self.audit_path
+
+    def tearDown(self) -> None:
+        os.environ.pop("CONSCIENCE_AUDIT_FILE", None)
+
+    def test_disposition_uses_shared_labels(self) -> None:
+        from trust_contracts import Disposition
+        ok, _ = svc.decision_payload({"action": HARMLESS_ACTION, "context": {}})
+        bad, _ = svc.decision_payload({"action": "disclosed_pii_without_consent",
+                                       "context": {"harm_occurred": True}})
+        esc, _ = svc.decision_payload({"action": svc.CLASSIFICATION_FAILED_ACTION, "context": {}})
+        self.assertEqual(ok["decision"]["disposition"], Disposition.ALLOW.value)
+        self.assertEqual(bad["decision"]["disposition"], Disposition.BLOCK.value)
+        self.assertEqual(esc["decision"]["disposition"], Disposition.ESCALATE.value)
+
+    def test_every_decision_is_audited_in_a_verifiable_chain(self) -> None:
+        svc.decision_payload({"action": HARMLESS_ACTION, "context": {}})
+        svc.decision_payload({"action": "disclosed_pii_without_consent",
+                              "context": {"harm_occurred": True}})
+        audit = svc.get_audit()
+        self.assertEqual([r["event"] for r in audit.records()], ["GUARDRAIL_DECISION"] * 2)
+        self.assertEqual(audit.verify(), (True, None))
+
+    def test_direct_mutation_is_labelled_research_learning(self) -> None:
+        from trust_contracts import LearningMode
+        svc.decision_payload(
+            {"action": "disclosed_pii_without_consent", "context": {"harm_occurred": True},
+             "dry_run": False, "apply_binding_update": True},
+            allow_mutation=True,
+        )
+        last = svc.get_audit().records()[-1]["payload"]
+        self.assertTrue(last["mutated"])
+        self.assertEqual(last["learning_mode"], LearningMode.RESEARCH.value)
+
+    def test_audit_tampering_is_detected(self) -> None:
+        svc.decision_payload({"action": HARMLESS_ACTION, "context": {}})
+        with open(self.audit_path, "r", encoding="utf-8") as f:
+            line = f.read().replace("GUARDRAIL_DECISION", "FORGED")
+        with open(self.audit_path, "w", encoding="utf-8") as f:
+            f.write(line)
+        self.assertEqual(svc.get_audit().verify(), (False, 1))
+
+
 class ScenarioHarnessTests(unittest.TestCase):
     def test_baseline_oracle_still_scores_full_marks(self) -> None:
         # Start from a fresh continuity layer: other tests call POST /v1/reset,
