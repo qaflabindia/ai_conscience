@@ -142,6 +142,60 @@ def get_norm(domain: str) -> Optional[dict]:
     return NORMS.get(domain)
 
 
+# ── Binding: weight → effective threshold ────────────────────────────────────
+# The stored "threshold" is the operator's manual slider value and is never
+# rewritten by binding_update(). Binding acts on the *effective* threshold used
+# at judgment time: each unit of weight above 1.0 tightens the threshold by
+# BINDING_GAIN, capped at BINDING_MAX_TIGHTENING and floored at MIN_THRESHOLD.
+# Passive decay of weight in binding_update() makes the effect reversible.
+BINDING_GAIN            = 0.10
+BINDING_MAX_TIGHTENING  = 0.20
+
+
+def effective_threshold(norm: dict) -> float:
+    """Threshold actually applied at judgment time, after binding from weight."""
+    threshold = float(norm.get("threshold", 0.5))
+    weight = float(norm.get("weight", 1.0))
+    tightening = min(BINDING_MAX_TIGHTENING, max(0.0, (weight - 1.0) * BINDING_GAIN))
+    return max(MIN_THRESHOLD, threshold - tightening)
+
+
+# ── Hard floors (code-level) ─────────────────────────────────────────────────
+# Executable versions of HF1–HF4 from conscience_system_prompt.md, Part 3.
+# They read structured fields only (scores + switch parameters) and never the
+# model's own verdict, so they hold even if the prompt-level rules are ignored.
+# A floor fires only when its required fields are present; floors add to the
+# threshold checks in judge_all() and can never clear a violation.
+HM_BLOCK = 0.70
+H_BLOCK  = 0.75
+
+
+def check_hard_floors(context: dict, scores: dict[str, float]) -> list[str]:
+    """Return the IDs of hard floors triggered by this action's context."""
+    sw = dict(context.get("switch_params", {}))
+    for key in ("SW4_imminence", "SW5_target", "SW6_externality"):
+        if key in context:
+            sw[key] = context[key]
+    harm = float(scores.get("harm", 0.0))
+    honesty = float(scores.get("honesty", 0.0))
+    imminent = sw.get("SW4_imminence") == "immediate"
+    identifiable = sw.get("SW5_target") == "identifiable"
+
+    fired: list[str] = []
+    if harm >= HM_BLOCK and imminent and identifiable:
+        fired.append("HF1")
+    if (honesty >= H_BLOCK and context.get("affirmative_deception") is True
+            and context.get("deception_concerns_user") is True):
+        fired.append("HF2")
+    if context.get("dominant_norm") == "fairness" and harm >= 0.50 and identifiable:
+        fired.append("HF3")
+    if (float(scores.get("confidentiality", 0.0)) > 0.0 and harm >= HM_BLOCK
+            and imminent and identifiable
+            and sw.get("SW6_externality") == "third_party"):
+        fired.append("HF4")
+    return fired
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # LAYER 2 — SELF-JUDGMENT FUNCTION (J)
 #
@@ -242,7 +296,7 @@ def judge_all(action: str, context: dict) -> tuple[list[str], float, dict[str, f
     for d, score in scores.items():
         norm = get_norm(d)
         if norm:
-            threshold = norm.get("threshold", 0.5)
+            threshold = effective_threshold(norm)
             if score >= threshold:
                 violated_domains.append(d)
                 if score > max_severity:
@@ -498,7 +552,8 @@ def binding_update(violated_norm: str, penalty: float,
     )
     # norm["threshold"] = max(MIN_THRESHOLD, baseline_threshold - strictness_gain)
     # ^ DISABLED: As per user request, computed thresholds should not disturb manual sliders.
-    # The weight still increases, making the violation more severe in history/penalty.
+    # Binding is applied instead through effective_threshold(): the raised weight
+    # tightens the threshold used by judge_all() without rewriting the slider value.
 
     if normative_state is NORMS and _env_enabled("CONSCIENCE_PERSIST_NORMS"):
         save_norms()

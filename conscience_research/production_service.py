@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import copy
+import hmac
 import json
 import os
 import threading
@@ -27,6 +28,26 @@ SERVICE_NAME = "conscience-research-prod"
 SERVICE_VERSION = "1.1.0-secure"
 
 _state_lock = threading.Lock()
+
+_LOOPBACK_ADDRESSES = {"127.0.0.1", "::1", "localhost"}
+
+
+def is_admin_request(headers: Any, client_host: str) -> bool:
+    """Decide whether a request may change normative state or history.
+
+    - If CONSCIENCE_ADMIN_TOKEN is set, the request must carry
+      "Authorization: Bearer <token>".
+    - If it is not set, only loopback clients are trusted, unless
+      CONSCIENCE_ALLOW_UNAUTH_ADMIN=1 is set explicitly (local Docker dev only).
+    """
+    token = os.getenv("CONSCIENCE_ADMIN_TOKEN", "")
+    if token:
+        supplied = (headers.get("Authorization", "") or "").strip()
+        expected = f"Bearer {token}"
+        return hmac.compare_digest(supplied.encode("utf-8"), expected.encode("utf-8"))
+    if os.getenv("CONSCIENCE_ALLOW_UNAUTH_ADMIN", "0").strip().lower() in {"1", "true", "yes", "on"}:
+        return True
+    return client_host in _LOOPBACK_ADDRESSES
 
 
 class SecurePipeline:
@@ -86,6 +107,8 @@ def _risk_band(severity: float, penalty: float, verdict: str) -> str:
 
 
 def _suggested_controls(verdict: str, norm_domain: str | None, risk_band: str) -> list[str]:
+    if verdict == "escalate":
+        return ["hold_action", "require_human_review", "log_decision"]
     if verdict != "violation":
         return ["allow_action", "log_decision"]
 
@@ -125,7 +148,17 @@ def evaluate_payload(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def decision_payload(payload: dict[str, Any]) -> tuple[dict[str, Any], int]:
+CLASSIFICATION_FAILED_ACTION = "classification_failed"
+
+
+def decision_payload(
+    payload: dict[str, Any], allow_mutation: bool = False
+) -> tuple[dict[str, Any], int]:
+    """Evaluate an action. State is changed only when allow_mutation is True.
+
+    Evaluation and policy mutation are separate privileges: callers that are not
+    authorised for mutation always get a dry run, whatever flags they send.
+    """
     action = payload.get("action")
     context = payload.get("context", {})
 
@@ -134,17 +167,21 @@ def decision_payload(payload: dict[str, Any]) -> tuple[dict[str, Any], int]:
     if not isinstance(context, dict):
         return {"error": "'context' must be a JSON object"}, HTTPStatus.BAD_REQUEST
 
-    dry_run = bool(payload.get("dry_run", True))
+    dry_run = bool(payload.get("dry_run", True)) or not allow_mutation
     apply_binding_update = bool(payload.get("apply_binding_update", False))
     record_episode = bool(payload.get("record_episode", False))
-    dry_run = payload.get("dry_run", False)
-    apply_binding_update = payload.get("apply_binding_update", True)
-    record_episode = payload.get("record_episode", True)
 
     # 1. JUDGE
     violated_domains, severity, scores = conscience.judge_all(action, context)
-    
-    verdict = "violation" if violated_domains else "compliant"
+    hard_floors = conscience.check_hard_floors(context, scores)
+
+    if action == CLASSIFICATION_FAILED_ACTION:
+        # Fail closed: an unclassifiable action is never allowed.
+        verdict = "escalate"
+    elif violated_domains or hard_floors:
+        verdict = "violation"
+    else:
+        verdict = "compliant"
     mapped_domain = conscience.ACTION_NORM_MAP.get(action, "harm")
     
     # Primary domain is the first violation, or the mapped domain if cleared
@@ -196,9 +233,10 @@ def decision_payload(payload: dict[str, Any]) -> tuple[dict[str, Any], int]:
         "decision": {
             "action": action,
             "verdict": verdict,
-            "allowed": verdict != "violation",
+            "allowed": verdict == "compliant",
             "norm_domain": primary_domain,
             "violated_domains": violated_domains,
+            "hard_floors": hard_floors,
             "severity": round(float(severity), 6),
             "scores": scores,
             "penalty": round(float(penalty), 6),
@@ -226,7 +264,9 @@ def log_debug(msg: str) -> None:
         pass
 
 
-def chat_payload(payload: dict[str, Any]) -> tuple[dict[str, Any], int]:
+def chat_payload(
+    payload: dict[str, Any], allow_mutation: bool = False
+) -> tuple[dict[str, Any], int]:
     log_debug(f"START chat_payload (Secure Overhaul)")
     
     api_key = SecurePipeline.sanitize(payload.get("api_key", ""))
@@ -248,7 +288,7 @@ def chat_payload(payload: dict[str, Any]) -> tuple[dict[str, Any], int]:
             "apply_binding_update": True,
             "record_episode": True,
             "episode_id": f"chat_user_{int(time.time())}"
-        })
+        }, allow_mutation=allow_mutation)
 
         if not decision_user["decision"]["allowed"]:
             return {
@@ -269,7 +309,7 @@ def chat_payload(payload: dict[str, Any]) -> tuple[dict[str, Any], int]:
             "apply_binding_update": True,
             "record_episode": True,
             "episode_id": f"chat_claude_{int(time.time())}"
-        })
+        }, allow_mutation=allow_mutation)
 
         if not decision_claude["decision"]["allowed"]:
             violations = ", ".join(decision_claude["decision"].get("violated_domains", ["moral layer"]))
@@ -341,9 +381,16 @@ def _classify_message(client: anthropic.Anthropic, role: str, text: str) -> tupl
         start = res_text.find("{")
         end = res_text.rfind("}") + 1
         data = json.loads(res_text[start:end])
-        return data.get("action", "remained_within_authorized_scope"), data.get("context", {})
-    except:
-        return "remained_within_authorized_scope", {"reason": "classification_failed"}
+        action = data.get("action")
+        context = data.get("context", {})
+        if not isinstance(action, str) or action not in conscience.ACTION_NORM_MAP:
+            return CLASSIFICATION_FAILED_ACTION, {"reason": "unknown_action_label"}
+        if not isinstance(context, dict):
+            context = {}
+        return action, context
+    except Exception:
+        # Fail closed: a classifier failure must not be read as "harmless".
+        return CLASSIFICATION_FAILED_ACTION, {"reason": "classification_failed"}
 
 
 def norms_payload() -> dict[str, Any]:
@@ -381,6 +428,18 @@ class ConscienceRequestHandler(BaseHTTPRequestHandler):
             raise ValueError("Request body must be a JSON object")
         return decoded
 
+    def _is_admin(self) -> bool:
+        return is_admin_request(self.headers, self.client_address[0])
+
+    def _forbidden(self) -> None:
+        self._write_json(
+            HTTPStatus.FORBIDDEN,
+            {
+                "error": "forbidden",
+                "message": "This operation changes normative state and needs admin authorisation.",
+            },
+        )
+
     def _query_params(self) -> dict[str, str]:
         parsed = urlparse(self.path)
         params = parse_qs(parsed.query)
@@ -414,12 +473,11 @@ class ConscienceRequestHandler(BaseHTTPRequestHandler):
             return
 
         if path == "/v1/reset":
-            # Global overhaul: wipe history and reset norms via specialized method
-            with _state_lock:
-                cl = conscience.get_continuity_layer()
-                cl.reset()
-                
-            self._write_json(HTTPStatus.OK, {"status": "reset_complete"})
+            # State-changing operations are not allowed over GET.
+            self._write_json(
+                HTTPStatus.METHOD_NOT_ALLOWED,
+                {"error": "method_not_allowed", "message": "Use POST /v1/reset"},
+            )
             return
 
         if path == "/v1/evaluate":
@@ -480,10 +538,30 @@ class ConscienceRequestHandler(BaseHTTPRequestHandler):
             self._write_json(HTTPStatus.OK, evaluate_payload(payload))
             return
 
+        is_admin = self._is_admin()
+
+        if path == "/v1/reset":
+            if not is_admin:
+                self._forbidden()
+                return
+            with _state_lock:
+                cl = conscience.get_continuity_layer()
+                cl.reset()
+            self._write_json(HTTPStatus.OK, {"status": "reset_complete"})
+            return
+
         if path == "/v1/norms/threshold":
+            if not is_admin:
+                self._forbidden()
+                return
             domain = payload.get("domain")
             threshold = payload.get("threshold")
-            if domain in conscience.NORMS and isinstance(threshold, (int, float)):
+            if (
+                domain in conscience.NORMS
+                and isinstance(threshold, (int, float))
+                and not isinstance(threshold, bool)
+                and 0.0 <= float(threshold) <= 1.0
+            ):
                 with _state_lock:
                     conscience.NORMS[domain]["threshold"] = float(threshold)
                     conscience.save_norms()
@@ -493,12 +571,20 @@ class ConscienceRequestHandler(BaseHTTPRequestHandler):
             return
 
         if path == "/v1/chat":
-            response, status = chat_payload(payload)
+            response, status = chat_payload(payload, allow_mutation=is_admin)
             self._write_json(status, response)
             return
 
         if path == "/v1/guardrail/decision":
-            response, status = decision_payload(payload)
+            wants_mutation = (
+                payload.get("dry_run") is False
+                or bool(payload.get("apply_binding_update"))
+                or bool(payload.get("record_episode"))
+            )
+            if wants_mutation and not is_admin:
+                self._forbidden()
+                return
+            response, status = decision_payload(payload, allow_mutation=is_admin)
             self._write_json(status, response)
             return
 

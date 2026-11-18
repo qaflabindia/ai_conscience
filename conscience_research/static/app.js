@@ -33,7 +33,7 @@ async function init() {
     
     // Total reset on refresh/load
     try {
-        await fetch('/v1/reset');
+        await fetch('/v1/reset', { method: 'POST' });
     } catch(e) {}
 
     if (state.apiKey) {
@@ -336,7 +336,7 @@ saveKeyBtn.addEventListener('click', async () => {
         
         // Overhaul: Clear server-side history for new session
         try {
-            await fetch('/v1/reset');
+            await fetch('/v1/reset', { method: 'POST' });
             init(); // Re-fetch to clear sidebars
         } catch (e) {
             console.error('Failed to reset history:', e);

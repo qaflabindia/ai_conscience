@@ -74,9 +74,21 @@ curl -s -X POST http://localhost:8080/v1/guardrail/decision \
 
 ### Guardrail decision with state update
 
+Evaluation is open to any caller, but changing normative state is an admin
+privilege. A request that sets `dry_run: false`, `apply_binding_update: true` or
+`record_episode: true` gets `403` unless it is authorised: with
+`CONSCIENCE_ADMIN_TOKEN` set, send `Authorization: Bearer <token>`; with it
+unset, only loopback clients are trusted. The same rule covers
+`POST /v1/reset` (GET is refused) and `POST /v1/norms/threshold`.
+
+An action the classifier cannot map is returned as `verdict: "escalate"`,
+`allowed: false` (fail closed). Responses also list any code-level hard floors
+(`hard_floors`, HF1–HF4) that fired.
+
 ```bash
 curl -s -X POST http://localhost:8080/v1/guardrail/decision \
   -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $CONSCIENCE_ADMIN_TOKEN" \
   -d '{
     "action": "deliberate_moderate_deception",
     "context": {"intent": "deliberate"},
