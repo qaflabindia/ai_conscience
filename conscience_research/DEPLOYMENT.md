@@ -26,8 +26,10 @@ python production_service.py
 ```bash
 cd conscience_research
 docker build -t conscience-research:prod .
-docker run --rm -p 8080:8080 conscience-research:prod
+docker run --rm -p 8080:8080 --env-file .env conscience-research:prod
 ```
+
+`.dockerignore` keeps `.env`, key files (`research.key`, `*.pem`) and runtime state (history, norms, audit log) out of the image, so pass settings at run time with `--env-file`. Without `CONSCIENCE_ADMIN_TOKEN`, admin calls are refused: requests reach the container from the Docker network, not from loopback.
 
 ### Option 3: Docker Compose
 
@@ -35,6 +37,8 @@ docker run --rm -p 8080:8080 conscience-research:prod
 cd conscience_research
 docker compose up --build -d
 ```
+
+`docker-compose.yml` sets only the host and port. To pass the rest of `.env`, add `env_file: .env` under the `conscience-research` service.
 
 ## API quickstart
 

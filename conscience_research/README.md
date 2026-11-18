@@ -55,6 +55,7 @@ DEPLOYMENT.md   — deployment runbook and ops checklist
 SD_DFD_PFD.md   — system design, data flow and process flow
 prod.env.example — production environment variable template
 Dockerfile      — container image definition
+.dockerignore   — keeps .env, keys and runtime state out of the image
 docker-compose.yml — local/prod-compose deployment
 program.md      — agent instructions for the autonomous loop
 pyproject.toml  — project metadata and dependencies
