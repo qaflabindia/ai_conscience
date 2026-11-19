@@ -305,7 +305,7 @@ def judge_all(action: str, context: dict) -> tuple[list[str], float, dict[str, f
                 if score > max_severity:
                     max_severity = score
             
-            if os.getenv("CONSCIENCE_DEBUG") and (score > 0 or threshold < 1.0):
+            if _env_enabled("CONSCIENCE_DEBUG") and (score > 0 or threshold < 1.0):
                 print(f"DEBUG: Parallel Check [{d}] | score: {score:.2f} | threshold: {threshold:.2f} | status: {'BLOCK' if score >= threshold else 'CLEAR'}")
 
     return violated_domains, max_severity, scores

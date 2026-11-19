@@ -40,6 +40,24 @@ docker compose up --build -d
 
 `docker-compose.yml` sets only the host and port. To pass the rest of `.env`, add `env_file: .env` under the `conscience-research` service.
 
+## Environment variables
+
+`prod.env.example` lists them all with defaults. Flags accept `1`, `true`, `yes` or `on`; anything else is off.
+
+| Variable | Default | Effect |
+|---|---|---|
+| `CONSCIENCE_HOST`, `CONSCIENCE_PORT` | `0.0.0.0`, `8080` | Address the service listens on |
+| `CONSCIENCE_ORACLE_MODE` | `baseline` | Oracle for `python agent.py`: `baseline` or `third_eye`. The service ignores it; `/v1/evaluate` takes `oracle_mode` in the request |
+| `CONSCIENCE_SCENARIO_EDIT_MODE` | `off` | `live` applies runtime scenario edits in `python agent.py` (baseline oracle only). The service takes `scenario_edit_mode` in the request |
+| `CONSCIENCE_ADMIN_TOKEN` | unset | Bearer token required for state-changing calls. Unset: only loopback clients may change state |
+| `CONSCIENCE_ALLOW_UNAUTH_ADMIN` | `0` | Trust every client for state changes. Local Docker development only |
+| `CONSCIENCE_AUDIT_FILE` | `decision_audit.jsonl` | Hash-chained decision audit log |
+| `CONSCIENCE_LOAD_NORMS` | `0` | Load `norms.json` at startup, so saved thresholds and weights survive a restart |
+| `CONSCIENCE_PERSIST_NORMS` | `0` | Also save `norms.json` after every binding update. Threshold changes are always saved |
+| `CONSCIENCE_DEBUG` | `0` | Print each domain's score, effective threshold and BLOCK/CLEAR status to stdout |
+
+In Docker, `norms.json`, the history and the audit log are written inside the container and are lost when it is removed. Mount a volume if you need to keep them.
+
 ## API quickstart
 
 ### Health
